@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -21,6 +22,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.service.quicksettings.TileService
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -72,6 +74,7 @@ class OverlayService : Service() {
     private var hideBubble: Runnable? = null
     private var expanded = false
     private var savedY = 0
+    private var hideTask: Runnable? = null
     private var dead = false
 
     private var state = State.OFF
@@ -86,6 +89,7 @@ class OverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         running = true
+        refreshTile()
         prefs = Prefs(this)
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startAsForeground()
@@ -114,7 +118,12 @@ class OverlayService : Service() {
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
             ACTION_RELOAD -> loadFigure()
-            ACTION_PREFS -> applyWakePref()
+            ACTION_PREFS -> {
+                applyWakePref()
+                val t = tts
+                if (t != null && ttsReady) applyVoice(t)
+            }
+            ACTION_SHOW -> summon()
         }
         return START_NOT_STICKY
     }
@@ -122,6 +131,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         running = false
         dead = true
+        refreshTile()
         main.removeCallbacksAndMessages(null)
         try {
             recognizer?.destroy()
@@ -162,14 +172,23 @@ class OverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
+        val show = PendingIntent.getService(
+            this, 3,
+            Intent(this, OverlayService::class.java).setAction(ACTION_SHOW),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val callAction = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_notify), "Chamar", show
+        ).build()
         val action = Notification.Action.Builder(
             Icon.createWithResource(this, R.drawable.ic_notify), "Desativar", stop
         ).build()
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("Capri ativa")
-            .setContentText("Diga \"Ok Capri\" ou toque no boneco")
+            .setContentText("Diga \"Ok Capri\" ou toque em Chamar")
             .setContentIntent(open)
+            .addAction(callAction)
             .addAction(action)
             .setOngoing(true)
             .build()
@@ -392,6 +411,48 @@ class OverlayService : Service() {
             bubble?.maxHeight = dp(230)
             p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
             wm.updateViewLayout(r, p)
+            scheduleAutoHide()
+        }
+    }
+
+    // ---------- aparecer e sumir ----------
+
+    private fun setShown(on: Boolean) {
+        root?.visibility = if (on) View.VISIBLE else View.GONE
+    }
+
+    private fun wakeUp() {
+        val h = hideTask
+        if (h != null) main.removeCallbacks(h)
+        setShown(true)
+    }
+
+    /** Chamada pelo botão Chamar da notificação ou pelo atalho de configurações rápidas. */
+    private fun summon() {
+        wakeUp()
+        say("Pode falar ou digitar.", false)
+        if (!expanded) setExpanded(true)
+    }
+
+    private fun scheduleAutoHide() {
+        val old = hideTask
+        if (old != null) main.removeCallbacks(old)
+        if (!prefs.autoHide || dead) return
+        val t = Runnable {
+            if (!expanded && (state == State.WAKE || state == State.OFF)) {
+                bubble?.visibility = View.GONE
+                setShown(false)
+            }
+        }
+        hideTask = t
+        main.postDelayed(t, 15000)
+    }
+
+    private fun refreshTile() {
+        try {
+            TileService.requestListeningState(this, ComponentName(this, CapriTile::class.java))
+        } catch (e: Exception) {
+            // sem atalho de configurações rápidas
         }
     }
 
@@ -420,6 +481,7 @@ class OverlayService : Service() {
     // ---------- escuta ----------
 
     private fun applyWakePref() {
+        if (prefs.autoHide) scheduleAutoHide() else wakeUp()
         if (prefs.listenWake) {
             if (state == State.OFF) startWake()
         } else {
@@ -447,6 +509,7 @@ class OverlayService : Service() {
     }
 
     private fun startWake() {
+        scheduleAutoHide()
         if (!prefs.listenWake) {
             state = State.OFF
             setDot(DIM)
@@ -559,6 +622,7 @@ class OverlayService : Service() {
                 for (t in candidates) {
                     val rest = afterWake(t)
                     if (rest != null) {
+                        wakeUp()
                         if (rest.length >= 3) {
                             startTurn(rest, true)
                         } else {
@@ -739,6 +803,7 @@ class OverlayService : Service() {
                 val t = tts
                 if (t != null) {
                     t.setLanguage(Locale("pt", "BR"))
+                    applyVoice(t)
                     t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {}
 
@@ -754,6 +819,21 @@ class OverlayService : Service() {
                     ttsReady = true
                 }
             }
+        }
+    }
+
+    private fun applyVoice(t: TextToSpeech) {
+        t.setPitch(prefs.pitch)
+        t.setSpeechRate(prefs.rate)
+        val name = prefs.voiceName
+        if (name.isNotEmpty()) {
+            val list: Set<android.speech.tts.Voice>? = try {
+                t.voices
+            } catch (e: Exception) {
+                null
+            }
+            val v = list?.firstOrNull { it.name == name }
+            if (v != null) t.setVoice(v)
         }
     }
 
@@ -803,6 +883,7 @@ class OverlayService : Service() {
         const val ACTION_STOP = "app.capri.STOP"
         const val ACTION_RELOAD = "app.capri.RELOAD"
         const val ACTION_PREFS = "app.capri.PREFS"
+        const val ACTION_SHOW = "app.capri.SHOW"
 
         private const val CHANNEL = "capri"
         private const val NOTIF_ID = 1

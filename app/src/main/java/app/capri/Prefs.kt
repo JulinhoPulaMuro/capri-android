@@ -35,6 +35,30 @@ class Prefs(context: Context) {
             sp.edit().putBoolean("speak", value).apply()
         }
 
+    var autoHide: Boolean
+        get() = sp.getBoolean("autoHide", false)
+        set(value) {
+            sp.edit().putBoolean("autoHide", value).apply()
+        }
+
+    var voiceName: String
+        get() = sp.getString("voiceName", "") ?: ""
+        set(value) {
+            sp.edit().putString("voiceName", value).apply()
+        }
+
+    var pitch: Float
+        get() = sp.getFloat("pitch", 1.0f)
+        set(value) {
+            sp.edit().putFloat("pitch", value).apply()
+        }
+
+    var rate: Float
+        get() = sp.getFloat("rate", 1.0f)
+        set(value) {
+            sp.edit().putFloat("rate", value).apply()
+        }
+
     var cutout: Boolean
         get() = sp.getBoolean("cutout", false)
         set(value) {

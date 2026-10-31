@@ -2,6 +2,7 @@ package app.capri
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -9,18 +10,26 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import java.io.File
+import java.util.Locale
 
 /** Tela de preparo: permissões, chave da API, imagem da Capri e liga/desliga. */
 class MainActivity : Activity() {
@@ -32,16 +41,31 @@ class MainActivity : Activity() {
     private lateinit var keyField: EditText
     private lateinit var modelField: EditText
     private lateinit var preview: ImageView
+    private lateinit var batteryStatus: TextView
+    private lateinit var batteryBtn: Button
+    private lateinit var voiceSpinner: Spinner
+    private var tts: TextToSpeech? = null
+    private var voices: List<Voice> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         setContentView(buildUi())
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) fillVoices()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         refresh()
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
+        super.onDestroy()
     }
 
     override fun onPause() {
@@ -117,9 +141,29 @@ class MainActivity : Activity() {
         speak.isChecked = prefs.speak
         speak.setOnCheckedChangeListener { _, checked -> prefs.speak = checked }
         col.addView(speak)
+        val hide = Switch(this)
+        hide.text = "Esconder o boneco até eu dizer \"Ok Capri\""
+        hide.setTextColor(INK)
+        hide.isChecked = prefs.autoHide
+        hide.setOnCheckedChangeListener { _, checked ->
+            prefs.autoHide = checked
+            if (OverlayService.running) {
+                startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_PREFS))
+            }
+        }
+        col.addView(hide)
 
         col.addView(heading("Comandos"))
         col.addView(body("Diga, por exemplo: \"Ok Capri, abrir WhatsApp\", \"pesquisar receita de bolo\", \"tocar Legião Urbana\", \"como chegar no aeroporto\", \"timer de 10 minutos\", \"alarme às 7 e meia\", \"ligar a lanterna\", \"que horas são\". Esses comandos funcionam sem gastar a IA. Pedidos em outras palavras a IA tenta entender."))
+
+        addVoiceSection(col)
+
+        col.addView(heading("Manter ligada"))
+        batteryStatus = body("")
+        col.addView(batteryStatus)
+        batteryBtn = button("Liberar uso de bateria") { askBattery() }
+        col.addView(batteryBtn)
+        col.addView(body("Para chamar a Capri sem abrir o app: puxe a barra de cima do celular, toque no lápis de editar e arraste o botão \"Capri\" para os atalhos. O botão liga a Capri e, com ela ligada, mostra a caixa de conversa. A notificação também tem o botão Chamar. O Android não deixa o microfone ligar sozinho depois de reiniciar o celular, então nessa hora a Capri deixa uma notificação para você tocar e ligar."))
 
         toggleBtn = button("Ativar Capri") { toggle() }
         col.addView(toggleBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply {
@@ -132,6 +176,83 @@ class MainActivity : Activity() {
         scroll.setBackgroundColor(BG)
         scroll.addView(col)
         return scroll
+    }
+
+    private fun addVoiceSection(col: LinearLayout) {
+        col.addView(heading("Voz da Capri"))
+        voiceSpinner = Spinner(this)
+        col.addView(voiceSpinner)
+        col.addView(body("Estas são as vozes em português que o seu celular tem. Para ter mais opções, abra as configurações do Android, procure \"Saída de texto para voz\" e baixe vozes do mecanismo do Google ou do fabricante."))
+        col.addView(body("Tom"))
+        col.addView(seek(((prefs.pitch - 0.5f) * 100f).toInt().coerceIn(0, 100)) { p -> prefs.pitch = 0.5f + p / 100f })
+        col.addView(body("Velocidade"))
+        col.addView(seek(((prefs.rate - 0.6f) * 100f).toInt().coerceIn(0, 100)) { p -> prefs.rate = 0.6f + p / 100f })
+        col.addView(button("Testar voz") { speakTest() })
+    }
+
+    private fun seek(progress: Int, onChange: (Int) -> Unit): SeekBar {
+        val s = SeekBar(this)
+        s.max = 100
+        s.progress = progress
+        s.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                if (fromUser) onChange(p)
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                pushVoice()
+            }
+        })
+        return s
+    }
+
+    private fun pushVoice() {
+        if (OverlayService.running) {
+            startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_PREFS))
+        }
+    }
+
+    private fun fillVoices() {
+        val all: Set<Voice>? = try {
+            tts?.voices
+        } catch (e: Exception) {
+            null
+        }
+        val pt = (all ?: emptySet<Voice>()).filter { it.locale.language == "pt" }.sortedBy { it.name }
+        voices = pt
+        val labels = ArrayList<String>()
+        labels.add("Voz padrão do celular")
+        var n = 1
+        for (v in pt) {
+            val where = if (v.isNetworkConnectionRequired) "online" else "no celular"
+            labels.add("Voz " + n + " (" + v.locale.toString().replace('_', '-') + ", " + where + ")")
+            n++
+        }
+        voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        voiceSpinner.setSelection(pt.indexOfFirst { it.name == prefs.voiceName } + 1)
+        voiceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                val name = if (pos == 0) "" else pt[pos - 1].name
+                if (name != prefs.voiceName) {
+                    prefs.voiceName = name
+                    pushVoice()
+                    speakTest()
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun speakTest() {
+        val t = tts ?: return
+        t.setPitch(prefs.pitch)
+        t.setSpeechRate(prefs.rate)
+        val v = voices.firstOrNull { it.name == prefs.voiceName }
+        if (v != null) t.setVoice(v) else t.setLanguage(Locale("pt", "BR"))
+        t.speak("Oi, eu sou a Capri. Esta é a minha voz.", TextToSpeech.QUEUE_FLUSH, null, "teste")
     }
 
     private fun heading(text: String): TextView {
@@ -239,6 +360,10 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun askBattery() {
+        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+    }
+
     private fun refresh() {
         val mic = hasMic()
         val ov = canOverlay()
@@ -249,6 +374,10 @@ class MainActivity : Activity() {
             "\nChave da API: " + mark(key)
         grantBtn.visibility = if (mic && ov && hasNotif()) View.GONE else View.VISIBLE
         toggleBtn.text = if (OverlayService.running) "Desativar Capri" else "Ativar Capri"
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val free = pm.isIgnoringBatteryOptimizations(packageName)
+        batteryStatus.text = "Sem limite de bateria: " + mark(free)
+        batteryBtn.visibility = if (free) View.GONE else View.VISIBLE
 
         val f = File(filesDir, "capri.png")
         val bmp = if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
