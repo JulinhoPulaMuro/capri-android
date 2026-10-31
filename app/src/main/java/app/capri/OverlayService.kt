@@ -658,22 +658,28 @@ class OverlayService : Service() {
             } catch (e: ClaudeException) {
                 Pair(false, errorText(e))
             } catch (e: IOException) {
-                Pair(false, "Sem conexão com a internet.")
+                Pair(false, "Sem conexão com a internet (" + e.javaClass.simpleName + ").")
             } catch (e: Exception) {
-                Pair(false, "O sinal caiu. Tente de novo.")
+                Pair(false, "Erro: " + e.javaClass.simpleName + " " + (e.message ?: "").take(120))
             }
             main.post { onReply(res.first, res.second) }
         }
     }
 
-    private fun errorText(e: ClaudeException): String = when (e.code) {
-        "http_401" -> "A chave da API foi recusada. Confira no app da Capri."
-        "http_403" -> "Essa chave não tem permissão para usar este modelo."
-        "http_404" -> "Modelo não encontrado. Ajuste o modelo no app da Capri."
-        "http_429" -> "Limite de uso atingido. Espere um pouco e tente de novo."
-        "http_529" -> "O serviço está sobrecarregado. Tente de novo em instantes."
-        "empty" -> "A resposta veio vazia. Tente de novo."
-        else -> "O sinal caiu. Tente de novo."
+    private fun errorText(e: ClaudeException): String {
+        val m = e.message ?: ""
+        if (m.contains("credit balance", ignoreCase = true)) {
+            return "Sua conta da API está sem crédito. Adicione crédito em console.anthropic.com, em Plans & Billing."
+        }
+        return when (e.code) {
+            "http_401" -> "A chave da API foi recusada. Confira no app da Capri."
+            "http_403" -> "Essa chave não tem permissão para usar este modelo."
+            "http_404" -> "Modelo não encontrado. Ajuste o modelo no app da Capri."
+            "http_429" -> "Limite de uso atingido. Espere um pouco e tente de novo."
+            "http_529" -> "O serviço está sobrecarregado. Tente de novo em instantes."
+            "empty" -> "A resposta veio vazia. Tente de novo."
+            else -> "Erro " + e.code.removePrefix("http_") + ": " + m.take(160)
+        }
     }
 
     private fun onReply(ok: Boolean, text: String) {

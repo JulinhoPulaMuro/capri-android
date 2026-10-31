@@ -41,7 +41,13 @@ object Claude {
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
             val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             if (status !in 200..299) {
-                throw ClaudeException("http_$status", raw.take(200))
+                var msg = raw.take(300)
+                try {
+                    msg = JSONObject(raw).getJSONObject("error").optString("message", msg)
+                } catch (e: Exception) {
+                    // mantém o texto bruto
+                }
+                throw ClaudeException("http_$status", msg)
             }
 
             val content = JSONObject(raw).optJSONArray("content")
