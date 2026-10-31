@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -16,14 +16,33 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - name: Ambiente
+        run: |
+          echo "::notice title=Ambiente::ANDROID_HOME=${ANDROID_HOME:-vazio} platforms=$(ls ${ANDROID_HOME:-/nonexistent}/platforms 2>&1 | tr '\n' ' ') java=$(java -version 2>&1 | head -1)"
+
+      - name: Aceitar licencas do SDK
+        run: |
+          SDKM=$(ls ${ANDROID_HOME}/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager=${SDKM:-nao achei}"
+          if [ -n "$SDKM" ]; then yes | "$SDKM" --licenses > /dev/null 2>&1 || true; fi
 
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Compilar
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          set +e
+          ./gradlew --no-daemon assembleDebug > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            msg=$(grep -E "^e: |^w: .*(Unresolved|error)|FAILED|What went wrong|Execution failed|Could not|error:|Caused by" -A3 build.log | head -90)
+            msg="${msg//'%'/'%25'}"
+            msg="${msg//$'\r'/'%0D'}"
+            msg="${msg//$'\n'/'%0A'}"
+            echo "::error title=Erros do Gradle::${msg}"
+            tail -25 build.log | sed 's/^/LOG: /'
+          fi
+          exit $code
 
       - uses: actions/upload-artifact@v4
         with:
