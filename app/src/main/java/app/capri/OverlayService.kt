@@ -76,6 +76,7 @@ class OverlayService : Service() {
     private var savedY = 0
     private var hideTask: Runnable? = null
     private var dead = false
+    private var engineInUse = ""
 
     private var state = State.OFF
     private var voiceTurn = false
@@ -120,8 +121,16 @@ class OverlayService : Service() {
             ACTION_RELOAD -> loadFigure()
             ACTION_PREFS -> {
                 applyWakePref()
-                val t = tts
-                if (t != null && ttsReady) applyVoice(t)
+                if (prefs.ttsEngine != engineInUse) {
+                    tts?.stop()
+                    tts?.shutdown()
+                    tts = null
+                    ttsReady = false
+                    initTts()
+                } else {
+                    val t = tts
+                    if (t != null && ttsReady) applyVoice(t)
+                }
             }
             ACTION_SHOW -> summon()
         }
@@ -798,8 +807,14 @@ class OverlayService : Service() {
     // ---------- voz de resposta ----------
 
     private fun initTts() {
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
+        engineInUse = prefs.ttsEngine
+        val engine: String? = if (engineInUse.isEmpty()) null else engineInUse
+        tts = TextToSpeech(this, TextToSpeech.OnInitListener { status ->
+            if (status != TextToSpeech.SUCCESS && engine != null) {
+                // o mecanismo escolhido não abriu: volta ao padrão do celular
+                prefs.ttsEngine = ""
+                main.post { initTts() }
+            } else if (status == TextToSpeech.SUCCESS) {
                 val t = tts
                 if (t != null) {
                     t.setLanguage(Locale("pt", "BR"))
@@ -819,7 +834,7 @@ class OverlayService : Service() {
                     ttsReady = true
                 }
             }
-        }
+        }, engine)
     }
 
     private fun applyVoice(t: TextToSpeech) {

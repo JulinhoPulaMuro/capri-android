@@ -59,6 +59,24 @@ class Prefs(context: Context) {
             sp.edit().putFloat("rate", value).apply()
         }
 
+    var ttsEngine: String
+        get() = sp.getString("ttsEngine", "") ?: ""
+        set(value) {
+            sp.edit().putString("ttsEngine", value).apply()
+        }
+
+    var onlyFemale: Boolean
+        get() = sp.getBoolean("onlyFemale", true)
+        set(value) {
+            sp.edit().putBoolean("onlyFemale", value).apply()
+        }
+
+    var femaleVoices: Set<String>
+        get() = HashSet<String>(sp.getStringSet("female", emptySet<String>()) ?: emptySet<String>())
+        set(value) {
+            sp.edit().putStringSet("female", HashSet<String>(value)).apply()
+        }
+
     var cutout: Boolean
         get() = sp.getBoolean("cutout", false)
         set(value) {

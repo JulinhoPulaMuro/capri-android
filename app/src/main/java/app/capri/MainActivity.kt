@@ -44,6 +44,9 @@ class MainActivity : Activity() {
     private lateinit var batteryStatus: TextView
     private lateinit var batteryBtn: Button
     private lateinit var voiceSpinner: Spinner
+    private lateinit var engineSpinner: Spinner
+    private lateinit var voiceHint: TextView
+    private lateinit var markBtn: Button
     private var tts: TextToSpeech? = null
     private var voices: List<Voice> = emptyList()
 
@@ -51,9 +54,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         setContentView(buildUi())
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) fillVoices()
-        }
+        startTts()
     }
 
     override fun onResume() {
@@ -180,9 +181,29 @@ class MainActivity : Activity() {
 
     private fun addVoiceSection(col: LinearLayout) {
         col.addView(heading("Voz da Capri"))
+
+        col.addView(body("Mecanismo de voz"))
+        engineSpinner = Spinner(this)
+        col.addView(engineSpinner)
+        col.addView(body("Para usar vozes de outro app, instale o app, ative-o em Configurações do Android, Saída de texto para voz, e depois escolha o mecanismo dele aqui."))
+
+        val fem = Switch(this)
+        fem.text = "Mostrar só vozes femininas"
+        fem.setTextColor(INK)
+        fem.isChecked = prefs.onlyFemale
+        fem.setOnCheckedChangeListener { _, checked ->
+            prefs.onlyFemale = checked
+            refreshVoiceList()
+        }
+        col.addView(fem)
+
         voiceSpinner = Spinner(this)
         col.addView(voiceSpinner)
-        col.addView(body("Estas são as vozes em português que o seu celular tem. Para ter mais opções, abra as configurações do Android, procure \"Saída de texto para voz\" e baixe vozes do mecanismo do Google ou do fabricante."))
+        voiceHint = body("")
+        col.addView(voiceHint)
+        markBtn = button("Marcar esta voz como feminina") { toggleMark() }
+        col.addView(markBtn)
+
         col.addView(body("Tom"))
         col.addView(seek(((prefs.pitch - 0.5f) * 100f).toInt().coerceIn(0, 100)) { p -> prefs.pitch = 0.5f + p / 100f })
         col.addView(body("Velocidade"))
@@ -214,36 +235,139 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun startTts() {
+        tts?.stop()
+        tts?.shutdown()
+        val e = prefs.ttsEngine
+        val engine: String? = if (e.isEmpty()) null else e
+        tts = TextToSpeech(this, TextToSpeech.OnInitListener { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                fillEngines()
+                fillVoices()
+            } else if (prefs.ttsEngine.isNotEmpty()) {
+                prefs.ttsEngine = ""
+                startTts()
+            }
+        }, engine)
+    }
+
+    private fun currentEngine(): String {
+        val e = prefs.ttsEngine
+        return if (e.isNotEmpty()) e else (tts?.defaultEngine ?: "")
+    }
+
+    private fun fillEngines() {
+        val list: List<TextToSpeech.EngineInfo> = try {
+            tts?.engines ?: emptyList<TextToSpeech.EngineInfo>()
+        } catch (e: Exception) {
+            emptyList<TextToSpeech.EngineInfo>()
+        }
+        val labels = list.map { it.label ?: it.name }
+        engineSpinner.onItemSelectedListener = null
+        engineSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        val idx = list.indexOfFirst { it.name == currentEngine() }
+        if (idx >= 0) engineSpinner.setSelection(idx)
+        engineSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                val pkg = list[pos].name
+                if (pkg != currentEngine()) {
+                    prefs.ttsEngine = pkg
+                    prefs.voiceName = ""
+                    pushVoice()
+                    startTts()
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun isFemale(v: Voice): Boolean {
+        val n = v.name.lowercase()
+        return prefs.femaleVoices.contains(v.name) || n.contains("female") || n.contains("feminin")
+    }
+
     private fun fillVoices() {
         val all: Set<Voice>? = try {
             tts?.voices
         } catch (e: Exception) {
             null
         }
-        val pt = (all ?: emptySet<Voice>()).filter { it.locale.language == "pt" }.sortedBy { it.name }
-        voices = pt
+        voices = (all ?: emptySet<Voice>()).filter { it.locale.language == "pt" }.sortedBy { it.name }
+        refreshVoiceList()
+    }
+
+    private fun refreshVoiceList() {
+        val fem = voices.filter { isFemale(it) }
+        val filterOn = prefs.onlyFemale && fem.isNotEmpty()
+        val list = if (filterOn) fem else voices
+        val offset = if (filterOn) 0 else 1
+
+        voiceHint.text = if (voices.isEmpty()) {
+            "Este mecanismo não tem vozes em português."
+        } else if (prefs.onlyFemale && fem.isEmpty()) {
+            "Nenhuma voz está marcada como feminina ainda. Escolha uma voz na lista (a frase de teste toca sozinha) e, se for feminina, toque em Marcar. Depois só as marcadas aparecem."
+        } else {
+            ""
+        }
+
+        // mantém a escolha coerente com o filtro, sem tocar a frase de teste
+        var cur = prefs.voiceName
+        if (filterOn && list.none { it.name == cur }) {
+            cur = list[0].name
+        } else if (!filterOn && cur.isNotEmpty() && list.none { it.name == cur }) {
+            cur = ""
+        }
+        if (cur != prefs.voiceName) {
+            prefs.voiceName = cur
+            pushVoice()
+        }
+
         val labels = ArrayList<String>()
-        labels.add("Voz padrão do celular")
+        if (!filterOn) labels.add("Voz padrão do celular")
         var n = 1
-        for (v in pt) {
-            val where = if (v.isNetworkConnectionRequired) "online" else "no celular"
-            labels.add("Voz " + n + " (" + v.locale.toString().replace('_', '-') + ", " + where + ")")
+        for (v in list) {
+            val tag = if (isFemale(v)) " (feminina)" else ""
+            labels.add("Voz " + n + tag + " · " + v.name)
             n++
         }
+        voiceSpinner.onItemSelectedListener = null
         voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-        voiceSpinner.setSelection(pt.indexOfFirst { it.name == prefs.voiceName } + 1)
+        val at = list.indexOfFirst { it.name == cur }
+        voiceSpinner.setSelection(if (at >= 0) at + offset else 0)
         voiceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                val name = if (pos == 0) "" else pt[pos - 1].name
+                val name = if (pos - offset < 0) "" else list[pos - offset].name
                 if (name != prefs.voiceName) {
                     prefs.voiceName = name
                     pushVoice()
                     speakTest()
+                    updateMarkBtn()
                 }
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
+        updateMarkBtn()
+    }
+
+    private fun updateMarkBtn() {
+        val v = voices.firstOrNull { it.name == prefs.voiceName }
+        markBtn.text = if (v == null) {
+            "Marcar a voz escolhida como feminina"
+        } else if (prefs.femaleVoices.contains(v.name)) {
+            "Desmarcar: esta voz NÃO é feminina"
+        } else {
+            "Marcar esta voz como feminina"
+        }
+    }
+
+    private fun toggleMark() {
+        val v = voices.firstOrNull { it.name == prefs.voiceName } ?: return
+        val set = HashSet<String>(prefs.femaleVoices)
+        if (!set.remove(v.name)) set.add(v.name)
+        prefs.femaleVoices = set
+        refreshVoiceList()
     }
 
     private fun speakTest() {
