@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -49,3 +51,13 @@ jobs:
           name: capri-chip-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publicar o APK na aba Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk capri-chip.apk
+          gh release create "apk-${{ github.run_number }}" capri-chip.apk \
+            --title "Capri Chip, build ${{ github.run_number }}" \
+            --notes "APK de teste (debug). Baixe capri-chip.apk e instale no Android."
