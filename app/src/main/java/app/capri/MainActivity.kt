@@ -71,20 +71,22 @@ class MainActivity : Activity() {
         grantBtn = button("Conceder permissões") { nextPermission() }
         col.addView(grantBtn)
 
-        col.addView(heading("2. Chave da API da Anthropic"))
+        col.addView(heading("2. Chave da API"))
         keyField = EditText(this)
-        keyField.hint = "sk-ant-..."
+        keyField.hint = "AIza... (Google, grátis)"
         keyField.setHintTextColor(DIM)
         keyField.setTextColor(INK)
         keyField.setSingleLine(true)
         keyField.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         keyField.setText(prefs.apiKey)
         col.addView(keyField)
-        col.addView(body("Fica guardada só neste celular. As mensagens vão direto do celular para a API da Anthropic e consomem os créditos da sua chave."))
+        col.addView(body("Chave grátis do Google: abra aistudio.google.com no navegador, entre com sua conta Google, toque em Get API key e copie a chave (começa com AIza). Não pede cartão. A chave fica guardada só neste celular e as mensagens vão direto dele para o Google. No plano grátis o Google pode usar as conversas para melhorar os produtos dele, então evite assuntos privados. Chaves da Anthropic (sk-ant-) também funcionam, mas são pagas."))
 
-        col.addView(heading("Modelo"))
+        col.addView(heading("Modelo (opcional)"))
         modelField = EditText(this)
         modelField.setTextColor(INK)
+        modelField.hint = "Deixe em branco para o padrão"
+        modelField.setHintTextColor(DIM)
         modelField.setSingleLine(true)
         modelField.setText(prefs.model)
         col.addView(modelField)

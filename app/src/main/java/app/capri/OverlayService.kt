@@ -654,7 +654,7 @@ class OverlayService : Service() {
         val snapshot = ArrayList<Pair<String, String>>(history)
         io.execute {
             val res: Pair<Boolean, String> = try {
-                Pair(true, Claude.ask(key, model, system, snapshot))
+                Pair(true, Ai.ask(key, model, system, snapshot))
             } catch (e: ClaudeException) {
                 Pair(false, errorText(e))
             } catch (e: IOException) {
@@ -671,12 +671,18 @@ class OverlayService : Service() {
         if (m.contains("credit balance", ignoreCase = true)) {
             return "Sua conta da API está sem crédito. Adicione crédito em console.anthropic.com, em Plans & Billing."
         }
+        if (m.contains("API key not valid", ignoreCase = true) || m.contains("API_KEY_INVALID", ignoreCase = true)) {
+            return "A chave da API foi recusada. Confira no app da Capri."
+        }
+        if (m.contains("location is not supported", ignoreCase = true)) {
+            return "O Google não libera a API grátis nesta região."
+        }
         return when (e.code) {
             "http_401" -> "A chave da API foi recusada. Confira no app da Capri."
             "http_403" -> "Essa chave não tem permissão para usar este modelo."
             "http_404" -> "Modelo não encontrado. Ajuste o modelo no app da Capri."
-            "http_429" -> "Limite de uso atingido. Espere um pouco e tente de novo."
-            "http_529" -> "O serviço está sobrecarregado. Tente de novo em instantes."
+            "http_429" -> "Limite grátis atingido por agora. Espere um minuto ou tente amanhã."
+            "http_529", "http_503" -> "O serviço está sobrecarregado. Tente de novo em instantes."
             "empty" -> "A resposta veio vazia. Tente de novo."
             else -> "Erro " + e.code.removePrefix("http_") + ": " + m.take(160)
         }

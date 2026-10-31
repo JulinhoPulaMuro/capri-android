@@ -18,9 +18,9 @@ class Prefs(context: Context) {
         }
 
     var model: String
-        get() = sp.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
+        get() = sp.getString("model", "") ?: ""
         set(value) {
-            sp.edit().putString("model", value.trim().ifEmpty { DEFAULT_MODEL }).apply()
+            sp.edit().putString("model", value.trim()).apply()
         }
 
     var listenWake: Boolean
