@@ -118,6 +118,9 @@ class MainActivity : Activity() {
         speak.setOnCheckedChangeListener { _, checked -> prefs.speak = checked }
         col.addView(speak)
 
+        col.addView(heading("Comandos"))
+        col.addView(body("Diga, por exemplo: \"Ok Capri, abrir WhatsApp\", \"pesquisar receita de bolo\", \"tocar Legião Urbana\", \"como chegar no aeroporto\", \"timer de 10 minutos\", \"alarme às 7 e meia\", \"ligar a lanterna\", \"que horas são\". Esses comandos funcionam sem gastar a IA. Pedidos em outras palavras a IA tenta entender."))
+
         toggleBtn = button("Ativar Capri") { toggle() }
         col.addView(toggleBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply {
             topMargin = dp(20)

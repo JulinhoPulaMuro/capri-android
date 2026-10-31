@@ -638,6 +638,12 @@ class OverlayService : Service() {
             return
         }
         voiceTurn = voice
+        val cmd = Commands.parse(q)
+        if (cmd != null) {
+            val said = Actions(this).run(cmd)
+            finishTurn(said, true)
+            return
+        }
         state = State.THINKING
         setDot(AMBER)
         say("Você: " + q + "\n…", true)
@@ -699,8 +705,21 @@ class OverlayService : Service() {
             trimHistory()
             prefs.saveHistory(history)
         }
+        var shown = text
+        if (ok) {
+            val parts = Commands.extractTags(text)
+            shown = if (parts.first.isEmpty()) "Pronto." else parts.first
+            for (a in parts.second.take(2)) {
+                val r = Actions(this).run(a)
+                if (Actions.failed(r)) shown = shown + " " + r
+            }
+        }
+        finishTurn(shown, ok)
+    }
+
+    private fun finishTurn(text: String, speakIt: Boolean) {
         say(text, false)
-        if (ok && voiceTurn && prefs.speak && ttsReady) {
+        if (speakIt && voiceTurn && prefs.speak && ttsReady) {
             speak(text)
         } else {
             startWake()
