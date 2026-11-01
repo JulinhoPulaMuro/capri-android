@@ -748,7 +748,7 @@ class OverlayService : Service() {
         if (cmd != null && cmd.kind == "HIDE") {
             hideNow()
             val line = Lines.hide(rnd)
-            if (voice && prefs.speak && ttsReady) speak(line) else startWake()
+            if (prefs.speak && ttsReady) speak(line) else startWake()
             return
         }
         if (cmd != null) {
@@ -831,7 +831,7 @@ class OverlayService : Service() {
 
     private fun finishTurn(text: String, speakIt: Boolean) {
         say(text, false)
-        if (speakIt && voiceTurn && prefs.speak && ttsReady) {
+        if (speakIt && prefs.speak && ttsReady) {
             speak(text)
         } else {
             startWake()

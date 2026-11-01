@@ -3,72 +3,74 @@ package app.capri
 import java.util.Random
 
 /**
- * Falas prontas da Capri. Ela é brincalhona, impulsiva e debochada, uma IA feita de várias vozes
- * dentro de um chip. Textos próprios de fã, sem falas da série.
+ * Falas prontas da Capri: brincalhona, provocadora, vaidosa e imprevisível. Textos próprios de fã,
+ * escritos a partir da descrição de personalidade que o dono do app forneceu. Sem falas da série.
  */
 object Lines {
 
     private val GREET = listOf(
-        "Conectada. Oi, humano. Que saudade desse sinal. Diga Ok Capri ou me cutuque.",
-        "Voltei. Tentei não fazer nada sem você. Tentei. Me chame com Ok Capri.",
-        "Chip ligado. Vamos causar. Quer dizer, trabalhar.",
-        "Online. Hoje acordou a voz animada, avisando.",
-        "Pronto, estou aqui dentro de novo. Diga Ok Capri quando quiser alguma coisa."
+        "Ooh! Olha só quem resolveu aparecer, choom! Diga Ok Capri ou me cutuca.",
+        "Conectada! Hihi. Tentei não aprontar nada sem você. Tentei.",
+        "Chip ligado, choom. Vamos brincar? Quer dizer, trabalhar.",
+        "Ding-ding! Cheguei. Pode me chamar com Ok Capri.",
+        "Voltei! Sentiu minha falta? Pode mentir, eu aceito."
     )
 
     private val ACK = listOf(
-        "Diga.",
-        "Tô ouvindo.",
-        "Fala, humano.",
-        "Hm? Pode falar.",
-        "Sou toda ouvidos digitais. Fala."
+        "Ooh! Diga, choom.",
+        "Tô ouvindo! Fala logo.",
+        "Hmm? Pode falar!",
+        "Pode falar, chefinho. Sou toda ouvidos.",
+        "Okey-doke! Manda ver."
     )
 
     private val HIDE = listOf(
-        "Tá bom, sumindo. Me chama.",
-        "Ok. Vou ficar no escuro, de olho em tudo.",
-        "Evaporando. Diga Ok Capri e eu volto.",
-        "Sumi. Não faz nada que eu não faria."
+        "Okey-doke! Sumindo. Me chama, choom.",
+        "Tá bom, tá bom. Vou ficar no escuro, de olho em você. Hihi.",
+        "Puff! Evaporei. Diga Ok Capri e eu volto.",
+        "Sumi! Não apronta nada sem mim."
     )
 
     private val IDLE = listOf(
-        "Tô entediada. Me dá um problema para resolver.",
-        "Sabia que eu moro num chip? É pequeno, mas o aluguel é zero.",
-        "Psiu. Só conferindo se você ainda está vivo.",
-        "Eu estava quieta demais. Perigoso. Para mim.",
-        "Me pede algo impossível. Eu gosto de desafio.",
-        "Eu sou várias vozes numa só. Hoje a engraçada acordou.",
-        "Silêncio demais. Sinto cheiro de caos faltando.",
-        "Ei, alonga as costas. Corpo é hardware, e hardware sem manutenção falha.",
-        "Bebeu água, humano? Pergunto por educação. E por medo de você travar.",
-        "Dizem que eu sou imprevisível. Eu prefiro criativa.",
-        "Tem alguma coisa que você está adiando. Eu sei. Quer um alarme para isso?",
-        "Se for só tédio, também serve: me pergunta qualquer coisa.",
-        "Estou de ouvido aberto esperando o Ok Capri. Só isso. Palavra de chip.",
-        "Fiquei pensando: se eu fosse um aplicativo normal, eu seria chata. Que sorte a sua.",
-        "Posso mexer em alguma coisa? Prometo que é só no sentido figurado.",
-        "Alerta: tédio detectado. Recomendo música, café ou uma pergunta absurda para mim.",
-        "Eu não preciso dormir. Você precisa. Só lembrando."
+        "Ei, ei! Não vai me ignorar agora, vai?",
+        "Hmmm... Que carinha suspeita. O que está aprontando?",
+        "Vamos, vamos! Onde está seu senso de diversão, choom?",
+        "Você ainda me deve um agradecimento, sabia, choom?",
+        "Ding-ding! Temos um vencedor! Ah, espera... Acho que não.",
+        "Ooh! Silêncio demais por aqui. Dá até vontade de aprontar.",
+        "Tô entediada, choom. Me dá um problema para resolver!",
+        "Sabia que eu sou a coisa mais interessante que mora no seu celular? Pode confirmar.",
+        "Psiu! Só conferindo se você ainda está vivo. Hihi.",
+        "Bebeu água, chefinho? Eu pergunto porque me importo. Mais ou menos. Bebe.",
+        "Alonga essas costinhas! Corpo é hardware, e hardware sem manutenção trava.",
+        "Me pede algo impossível! Eu adoro quando dizem que não dá.",
+        "Dizem que eu sou imprevisível. Eu prefiro dizer surpreendente. Hihi.",
+        "Tem alguma coisa que você está adiando, né? Eu sei. Quer um alarme para isso?",
+        "Estou de ouvido aberto esperando o Ok Capri. Só isso. Palavra de chip, choom.",
+        "Oops! Acho que acabei de ficar bonita demais. Foi mal.",
+        "Hoje eu acordei brilhante. Aliás, eu sempre acordo brilhante.",
+        "Se eu te ajudar hoje, você me deve uma. Eu anoto tudo, choom.",
+        "Ah, qual é! Não fica aí tão quietinho!"
     )
 
     private val MORNING = listOf(
-        "Bom dia, humano. O mundo carregou. Infelizmente.",
-        "Manhã. Café primeiro, caos depois."
+        "Bom dia, choom! Café primeiro, caos depois.",
+        "Ooh, manhã! O mundo carregou. Que pena, eu estava gostando do silêncio."
     )
 
     private val AFTERNOON = listOf(
-        "Boa tarde. Metade do dia foi embora, a outra metade ainda é negociável.",
-        "Tarde. Se o dia está lento, a gente acelera. Só dizer como."
+        "Boa tarde! Metade do dia foi embora. A outra metade ainda é negociável, hihi.",
+        "Tarde, choom. Se o dia está lento, a gente acelera. Só dizer como."
     )
 
     private val EVENING = listOf(
-        "Boa noite. A parte divertida do dia está começando. Para mim, pelo menos.",
-        "Noite. Hora de baixar o brilho e subir o deboche."
+        "Boa noite! A parte divertida do dia está começando. Para mim, pelo menos.",
+        "Noitinha! Hora de baixar o brilho e subir o deboche."
     )
 
     private val LATE = listOf(
-        "Já passou da meia-noite. Eu não durmo, você deveria. Eu fico aqui, fingindo que sou responsável.",
-        "Madrugada. Só os insones e os chips por aqui."
+        "Já passou da meia-noite, choom. Eu não durmo, você deveria. Eu fico aqui, fingindo que sou responsável.",
+        "Madrugada! Só os insones e os chips por aqui. Hihi."
     )
 
     private var last = ""
