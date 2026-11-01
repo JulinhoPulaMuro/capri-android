@@ -1,5 +1,8 @@
 package app.capri
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,7 +13,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
-import android.graphics.Outline
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Icon
@@ -35,13 +37,12 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -69,8 +70,11 @@ class OverlayService : Service() {
     private var bubble: TextView? = null
     private var inputRow: LinearLayout? = null
     private var input: EditText? = null
-    private var figure: ImageView? = null
+    private var figure: BodyView? = null
     private var dot: View? = null
+    private var moveTask: Runnable? = null
+    private var walker: ValueAnimator? = null
+    private var headIsFallback = false
     private var hideBubble: Runnable? = null
     private var expanded = false
     private var savedY = 0
@@ -120,6 +124,8 @@ class OverlayService : Service() {
         refreshTile()
         scheduleAutoHide(9000L)
         scheduleChatter()
+        figure?.setPose(BodyView.Pose.WAVE, 2200L)
+        scheduleMove()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -127,6 +133,9 @@ class OverlayService : Service() {
             ACTION_STOP -> stopSelf()
             ACTION_RELOAD -> loadFigure()
             ACTION_PREFS -> {
+                applyBody()
+                if (!prefs.moves || !prefs.wander) stopWalk()
+                scheduleMove()
                 applyWakePref()
                 if (prefs.ttsEngine != engineInUse) {
                     tts?.stop()
@@ -150,6 +159,7 @@ class OverlayService : Service() {
         dead = true
         shown = false
         refreshTile()
+        stopWalk()
         main.removeCallbacksAndMessages(null)
         try {
             recognizer?.destroy()
@@ -271,7 +281,7 @@ class OverlayService : Service() {
         r.addView(row, LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dp(8) })
 
         val fr = FrameLayout(this)
-        val img = ImageView(this)
+        val img = BodyView(this)
         fr.addView(img, FrameLayout.LayoutParams(dp(110), dp(140)))
         val d = View(this)
         d.background = oval(TEAL)
@@ -315,24 +325,132 @@ class OverlayService : Service() {
         val img = figure ?: return
         val f = File(filesDir, "capri.png")
         val bmp = if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+        headIsFallback = bmp == null
         if (bmp == null) {
-            img.clipToOutline = false
-            img.scaleType = ImageView.ScaleType.FIT_CENTER
-            img.setImageResource(R.drawable.ic_chip)
-            return
-        }
-        img.setImageBitmap(bmp)
-        if (prefs.cutout) {
-            img.clipToOutline = false
-            img.scaleType = ImageView.ScaleType.FIT_CENTER
+            img.setHead(null, resources.getDrawable(R.drawable.ic_chip, theme))
         } else {
-            img.scaleType = ImageView.ScaleType.CENTER_CROP
-            img.outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
+            img.setHead(bmp, null)
+        }
+        applyBody()
+    }
+
+    /** Aplica o corpo escolhido e ajusta o tamanho da figura. */
+    private fun applyBody() {
+        val f = figure ?: return
+        val type = prefs.bodyType.coerceIn(0, 3)
+        f.bodyType = type
+        f.bodyColor = prefs.bodyColor
+        f.cutout = prefs.cutout || headIsFallback
+        val lp = f.layoutParams
+        if (lp != null) {
+            lp.width = dp(if (type == 0) 110 else 120)
+            lp.height = dp(if (type == 0) 140 else 185)
+            f.layoutParams = lp
+        }
+        f.invalidate()
+    }
+
+    // ---------- movimentos ----------
+
+    private val poses = arrayOf(
+        BodyView.Pose.WAVE, BodyView.Pose.DANCE, BodyView.Pose.HOP,
+        BodyView.Pose.SPIN, BodyView.Pose.STRETCH, BodyView.Pose.LEAN
+    )
+
+    private fun scheduleMove() {
+        val old = moveTask
+        if (old != null) main.removeCallbacks(old)
+        if (dead || !prefs.moves) return
+        val t = Runnable { moveTick() }
+        moveTask = t
+        main.postDelayed(t, 5000L + rnd.nextInt(8000))
+    }
+
+    /** De tempos em tempos ela faz uma pose, uma dança ou passeia, se estiver quieta. */
+    private fun moveTick() {
+        if (dead) return
+        val f = figure
+        val calm = (state == State.WAKE || state == State.OFF) && !expanded && shown && walker == null
+        if (f != null && prefs.moves && calm && f.currentPose() == BodyView.Pose.IDLE) {
+            val bubbleOn = bubble?.visibility == View.VISIBLE
+            if (prefs.wander && !bubbleOn && rnd.nextInt(3) == 0) {
+                wander()
+            } else {
+                f.setPose(poses[rnd.nextInt(poses.size)], 2500L + rnd.nextInt(2500))
+            }
+        }
+        scheduleMove()
+    }
+
+    /** Anda até outro ponto da tela. */
+    private fun wander() {
+        val p = params ?: return
+        val r = root ?: return
+        val dm = resources.displayMetrics
+        val w = maxOf(r.width, dp(110))
+        val h = maxOf(r.height, dp(140))
+        val minX = dp(8)
+        val minY = dp(60)
+        val maxX = dm.widthPixels - w - dp(8)
+        val maxY = dm.heightPixels - h - dp(160)
+        if (maxX <= minX + dp(20) || maxY <= minY + dp(20)) return
+        val tx = minX + rnd.nextInt(maxX - minX)
+        val ty = minY + rnd.nextInt(maxY - minY)
+        val fx = p.x
+        val fy = p.y
+        val dist = Math.hypot((tx - fx).toDouble(), (ty - fy).toDouble()) / dm.density
+        val dur = (dist * 9.0).toLong().coerceIn(1500L, 6000L)
+        stopWalk()
+        figure?.setPose(BodyView.Pose.WALK)
+        val a = ValueAnimator.ofFloat(0f, 1f)
+        a.duration = dur
+        a.interpolator = LinearInterpolator()
+        a.addUpdateListener { va ->
+            val k = va.animatedValue as Float
+            p.x = (fx + (tx - fx) * k).toInt()
+            p.y = (fy + (ty - fy) * k).toInt()
+            try {
+                wm.updateViewLayout(r, p)
+            } catch (e: Exception) {
+                // janela já removida
+            }
+        }
+        a.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (walker === a) {
+                    walker = null
+                    val f = figure
+                    if (f != null && f.currentPose() == BodyView.Pose.WALK) f.setPose(BodyView.Pose.IDLE)
                 }
             }
-            img.clipToOutline = true
+        })
+        walker = a
+        a.start()
+    }
+
+    private fun stopWalk() {
+        val w = walker ?: return
+        walker = null
+        w.cancel()
+        val f = figure
+        if (f != null && f.currentPose() == BodyView.Pose.WALK) f.setPose(BodyView.Pose.IDLE)
+    }
+
+    /** Pose que combina com o que ela está fazendo (ouvindo, pensando, falando). */
+    private fun refreshPose() {
+        val f = figure ?: return
+        val want: BodyView.Pose? = when (state) {
+            State.THINKING -> BodyView.Pose.THINK
+            State.COMMAND -> BodyView.Pose.LISTEN
+            State.SPEAKING -> BodyView.Pose.TALK
+            else -> null
+        }
+        val cur = f.currentPose()
+        if (want != null) {
+            stopWalk()
+            if (cur != want) f.setPose(want)
+        } else if (cur == BodyView.Pose.THINK || cur == BodyView.Pose.LISTEN || cur == BodyView.Pose.TALK) {
+            f.setPose(BodyView.Pose.IDLE)
         }
     }
 
@@ -355,6 +473,7 @@ class OverlayService : Service() {
             } else {
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        stopWalk()
                         downX = e.rawX
                         downY = e.rawY
                         startX = p.x
@@ -412,6 +531,7 @@ class OverlayService : Service() {
         val p = params ?: return
         val r = root ?: return
         expanded = on
+        if (on) stopWalk()
         inputRow?.visibility = if (on) View.VISIBLE else View.GONE
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (on) {
@@ -436,6 +556,7 @@ class OverlayService : Service() {
     // ---------- aparecer e sumir ----------
 
     private fun setShown(on: Boolean) {
+        if (!on) stopWalk()
         root?.visibility = if (on) View.VISIBLE else View.GONE
         shown = on
         refreshTile()
@@ -445,7 +566,9 @@ class OverlayService : Service() {
         val h = hideTask
         if (h != null) main.removeCallbacks(h)
         userHidden = false
+        val wasHidden = !shown
         setShown(true)
+        if (wasHidden && prefs.moves) figure?.setPose(BodyView.Pose.WAVE, 1800L)
     }
 
     /** Esconde o boneco na hora, sem esperar. Ela continua ouvindo "Ok Capri". */
@@ -517,6 +640,7 @@ class OverlayService : Service() {
 
     private fun setDot(color: Int) {
         dot?.background = oval(color)
+        refreshPose()
     }
 
     // ---------- escuta ----------
@@ -752,8 +876,17 @@ class OverlayService : Service() {
             return
         }
         if (cmd != null) {
-            val said = Actions(this).run(cmd)
-            finishTurn(said, true)
+            if (expanded && NEEDS_FOCUS.contains(cmd.kind)) {
+                // devolve o foco ao app de baixo antes de mexer nele
+                setExpanded(false)
+                state = State.THINKING
+                setDot(AMBER)
+                main.postDelayed({
+                    if (!dead) finishTurn(Actions(this).run(cmd), true)
+                }, 450)
+            } else {
+                finishTurn(Actions(this).run(cmd), true)
+            }
             return
         }
         state = State.THINKING
@@ -821,12 +954,27 @@ class OverlayService : Service() {
         if (ok) {
             val parts = Commands.extractTags(text)
             out = if (parts.first.isEmpty()) "Pronto." else parts.first
-            for (a in parts.second.take(2)) {
-                val r = Actions(this).run(a)
-                if (Actions.failed(r)) out = out + " " + r
+            val acts = parts.second.take(3)
+            if (expanded && acts.any { NEEDS_FOCUS.contains(it.kind) }) {
+                setExpanded(false)
+                val base = out
+                main.postDelayed({
+                    if (!dead) finishTurn(runAll(acts, base), true)
+                }, 450)
+                return
             }
+            out = runAll(acts, out)
         }
         finishTurn(out, ok)
+    }
+
+    private fun runAll(acts: List<Action>, base: String): String {
+        var out = base
+        for (a in acts) {
+            val r = Actions(this).run(a)
+            if (Actions.failed(r)) out = out + " " + r
+        }
+        return out
     }
 
     private fun finishTurn(text: String, speakIt: Boolean) {
@@ -976,6 +1124,9 @@ class OverlayService : Service() {
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
         private val WAKE_WORDS = setOf("capri", "kapri", "capre", "kapre", "cabri", "capry")
+
+        /** Ações que mexem em outro app e precisam que o foco saia da caixa de texto da Capri. */
+        private val NEEDS_FOCUS = setOf("CLICK", "TYPE", "SCROLL", "GLOBAL")
 
         private val PANEL = 0xFF141229.toInt()
         private val INK = 0xFFEBE9FF.toInt()

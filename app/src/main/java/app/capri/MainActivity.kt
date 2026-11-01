@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.graphics.drawable.GradientDrawable
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
@@ -47,6 +48,12 @@ class MainActivity : Activity() {
     private lateinit var engineSpinner: Spinner
     private lateinit var voiceHint: TextView
     private lateinit var markBtn: Button
+    private lateinit var bodyPreview: BodyView
+    private lateinit var extrasStatus: TextView
+    private lateinit var a11yBtn: Button
+    private lateinit var contactsBtn: Button
+    private val swatches = ArrayList<Pair<View, Int>>()
+    private var poseIdx = 0
     private var tts: TextToSpeech? = null
     private var voices: List<Voice> = emptyList()
 
@@ -124,6 +131,8 @@ class MainActivity : Activity() {
         col.addView(preview, LinearLayout.LayoutParams(dp(160), dp(200)))
         col.addView(button("Escolher imagem") { pickImage() })
 
+        addBodySection(col)
+
         col.addView(heading("4. Opções"))
         val wake = Switch(this)
         wake.text = "Escutar \"Ok Capri\""
@@ -167,6 +176,9 @@ class MainActivity : Activity() {
 
         col.addView(heading("Comandos"))
         col.addView(body("Diga, por exemplo: \"Ok Capri, abrir WhatsApp\", \"pesquisar receita de bolo\", \"tocar Legião Urbana\", \"como chegar no aeroporto\", \"timer de 10 minutos\", \"alarme às 7 e meia\", \"ligar a lanterna\", \"que horas são\". Esses comandos funcionam sem gastar a IA. Pedidos em outras palavras a IA tenta entender."))
+        col.addView(body("Também: \"abrir um jogo aleatório\", \"aumenta o volume\", \"volume em 40\", \"pausa a música\", \"próxima música\", \"liga pra mãe\", \"manda zap pro João dizendo já cheguei\", \"abrir configurações de bateria\". Com a Acessibilidade ligada: \"voltar\", \"apps recentes\", \"abre as notificações\", \"tira um print\", \"bloqueia o celular\", \"rola pra baixo\", \"clica em Enviar\", \"digita olá\"."))
+
+        addExtrasSection(col)
 
         addVoiceSection(col)
 
@@ -188,6 +200,129 @@ class MainActivity : Activity() {
         scroll.setBackgroundColor(BG)
         scroll.addView(col)
         return scroll
+    }
+
+    private fun addBodySection(col: LinearLayout) {
+        col.addView(heading("Corpo da Capri"))
+        bodyPreview = BodyView(this)
+        bodyPreview.setBackgroundColor(PANEL)
+        bodyPreview.setOnClickListener { nextPose() }
+        col.addView(bodyPreview, LinearLayout.LayoutParams(dp(120), dp(185)))
+        col.addView(body("Toque na figura para ver os movimentos dela."))
+
+        val sp = Spinner(this)
+        val names = listOf(
+            "Sem corpo (só a imagem)",
+            "Fofa (cabeção e corpinho pequeno)",
+            "Esguia (corpo alto e fino)",
+            "Robô (quadradinho)"
+        )
+        sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
+        sp.setSelection(prefs.bodyType.coerceIn(0, 3))
+        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (pos != prefs.bodyType) {
+                    prefs.bodyType = pos
+                    applyBodyPreview()
+                    pushVoice()
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        col.addView(sp)
+
+        col.addView(body("Cor do corpo"))
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val colors = intArrayOf(
+            0xFFFF4F9D.toInt(), 0xFF46F0D4.toInt(), 0xFF9B6BFF.toInt(), 0xFFFFC145.toInt(),
+            0xFF7CFF6B.toInt(), 0xFFFF4D4D.toInt(), 0xFFEBE9FF.toInt(), 0xFF1B1B26.toInt()
+        )
+        swatches.clear()
+        for (c in colors) {
+            val v = View(this)
+            v.setOnClickListener {
+                prefs.bodyColor = c
+                paintSwatches()
+                applyBodyPreview()
+                pushVoice()
+            }
+            row.addView(v, LinearLayout.LayoutParams(dp(34), dp(34)).apply { rightMargin = dp(8) })
+            swatches.add(Pair(v, c))
+        }
+        col.addView(row)
+        paintSwatches()
+
+        val moves = Switch(this)
+        moves.text = "Ela se mexe sozinha (poses e danças)"
+        moves.setTextColor(INK)
+        moves.isChecked = prefs.moves
+        moves.setOnCheckedChangeListener { _, checked ->
+            prefs.moves = checked
+            pushVoice()
+        }
+        col.addView(moves)
+        val wander = Switch(this)
+        wander.text = "Ela passeia pela tela de vez em quando"
+        wander.setTextColor(INK)
+        wander.isChecked = prefs.wander
+        wander.setOnCheckedChangeListener { _, checked ->
+            prefs.wander = checked
+            pushVoice()
+        }
+        col.addView(wander)
+        col.addView(body("O corpo é um desenho simples feito de formas, para combinar com a imagem que você escolheu como rosto. Se a sua imagem já é o corpo inteiro, escolha \"Sem corpo\"."))
+    }
+
+    private fun paintSwatches() {
+        for (pr in swatches) {
+            val on = pr.second == prefs.bodyColor
+            val g = GradientDrawable()
+            g.shape = GradientDrawable.OVAL
+            g.setColor(pr.second)
+            g.setStroke(dp(if (on) 3 else 1), if (on) 0xFFFFFFFF.toInt() else 0xFF555577.toInt())
+            pr.first.background = g
+        }
+    }
+
+    private fun applyBodyPreview() {
+        val type = prefs.bodyType.coerceIn(0, 3)
+        bodyPreview.bodyType = type
+        bodyPreview.bodyColor = prefs.bodyColor
+        val lp = bodyPreview.layoutParams
+        lp.width = dp(if (type == 0) 110 else 120)
+        lp.height = dp(if (type == 0) 140 else 185)
+        bodyPreview.layoutParams = lp
+        bodyPreview.invalidate()
+    }
+
+    private fun nextPose() {
+        val all = arrayOf(
+            BodyView.Pose.WAVE, BodyView.Pose.DANCE, BodyView.Pose.HOP, BodyView.Pose.SPIN,
+            BodyView.Pose.STRETCH, BodyView.Pose.LEAN, BodyView.Pose.WALK, BodyView.Pose.THINK,
+            BodyView.Pose.LISTEN, BodyView.Pose.TALK
+        )
+        poseIdx = (poseIdx + 1) % all.size
+        bodyPreview.setPose(all[poseIdx], 3000L)
+    }
+
+    private fun addExtrasSection(col: LinearLayout) {
+        col.addView(heading("Poderes extras"))
+        extrasStatus = body("")
+        col.addView(extrasStatus)
+        contactsBtn = button("Liberar contatos (ligar e mandar mensagem pelo nome)") {
+            requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), REQ_CONTACTS)
+        }
+        col.addView(contactsBtn)
+        a11yBtn = button("Ligar a Acessibilidade da Capri") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        col.addView(a11yBtn)
+        col.addView(button("Informações do app (liberar configurações restritas)") {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        })
+        col.addView(body("A Acessibilidade é o que deixa a Capri apertar Voltar, abrir as notificações, tirar print, bloquear a tela, rolar, tocar em botões pelo nome e digitar. Ela só age quando você pede e não lê nem guarda o que aparece na tela. No Android 13 ou mais novo, apps instalados fora da Play Store vêm com isso bloqueado: se a opção aparecer em cinza, abra as informações do app, toque nos três pontinhos no canto de cima, escolha \"Permitir configurações restritas\" e depois ligue a Capri em Acessibilidade. Limites: nenhum app consegue \"qualquer coisa\". Apps de banco e telas protegidas bloqueiam esse acesso, o Android não deixa ligar Wi-Fi, dados, modo avião ou localização sozinho, e a Capri nunca aperta botões de pagar, comprar, transferir ou apagar conta. Mensagens ficam prontas para você tocar em enviar, e ligações abrem o discador."))
     }
 
     private fun addVoiceSection(col: LinearLayout) {
@@ -517,6 +652,19 @@ class MainActivity : Activity() {
         val f = File(filesDir, "capri.png")
         val bmp = if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
         if (bmp != null) preview.setImageBitmap(bmp) else preview.setImageResource(R.drawable.ic_chip)
+        if (bmp != null) {
+            bodyPreview.setHead(bmp, null)
+        } else {
+            bodyPreview.setHead(null, resources.getDrawable(R.drawable.ic_chip, theme))
+        }
+        bodyPreview.cutout = prefs.cutout || bmp == null
+        applyBodyPreview()
+
+        val contacts = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        val a11y = A11yService.enabled(this)
+        extrasStatus.text = "Contatos: " + mark(contacts) + "\nAcessibilidade: " + (if (a11y) "ligada" else "desligada")
+        contactsBtn.visibility = if (contacts) View.GONE else View.VISIBLE
+        a11yBtn.text = if (a11y) "Acessibilidade ligada (toque para ajustar)" else "Ligar a Acessibilidade da Capri"
     }
 
     private fun mark(ok: Boolean): String = if (ok) "ok" else "falta"
@@ -527,6 +675,7 @@ class MainActivity : Activity() {
         private const val REQ_PERM = 1
         private const val REQ_IMG = 2
         private const val REQ_CUT = 3
+        private const val REQ_CONTACTS = 4
         private val BG = 0xFF0B0A15.toInt()
         private val PANEL = 0xFF141229.toInt()
         private val INK = 0xFFEBE9FF.toInt()

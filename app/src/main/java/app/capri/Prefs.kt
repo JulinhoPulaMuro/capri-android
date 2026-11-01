@@ -89,6 +89,33 @@ class Prefs(context: Context) {
             sp.edit().putBoolean("cutout", value).apply()
         }
 
+    /** 0 sem corpo, 1 fofo, 2 esguio, 3 robô. */
+    var bodyType: Int
+        get() = sp.getInt("bodyType", 1)
+        set(value) {
+            sp.edit().putInt("bodyType", value).apply()
+        }
+
+    var bodyColor: Int
+        get() = sp.getInt("bodyColor", 0xFFFF4F9D.toInt())
+        set(value) {
+            sp.edit().putInt("bodyColor", value).apply()
+        }
+
+    /** Faz poses e danças sozinha de vez em quando. */
+    var moves: Boolean
+        get() = sp.getBoolean("moves", true)
+        set(value) {
+            sp.edit().putBoolean("moves", value).apply()
+        }
+
+    /** Passeia pela tela de vez em quando. */
+    var wander: Boolean
+        get() = sp.getBoolean("wander", true)
+        set(value) {
+            sp.edit().putBoolean("wander", value).apply()
+        }
+
     var posX: Int
         get() = sp.getInt("posX", -1)
         set(value) {
