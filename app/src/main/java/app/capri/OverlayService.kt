@@ -331,20 +331,26 @@ class OverlayService : Service() {
         } else {
             img.setHead(bmp, null)
         }
+        val bf = File(filesDir, "capri_body.png")
+        img.setSprite(if (bf.exists()) BitmapFactory.decodeFile(bf.absolutePath) else null)
         applyBody()
     }
 
     /** Aplica o corpo escolhido e ajusta o tamanho da figura. */
     private fun applyBody() {
         val f = figure ?: return
-        val type = prefs.bodyType.coerceIn(0, 3)
-        f.bodyType = type
+        f.bodyType = prefs.bodyType.coerceIn(0, 4)
         f.bodyColor = prefs.bodyColor
         f.cutout = prefs.cutout || headIsFallback
+        f.faceX = prefs.faceX
+        f.faceY = prefs.faceY
+        f.faceW = prefs.faceW
+        val box = f.boxDp()
+        val k = prefs.figureScale.coerceIn(0.6f, 1.6f)
         val lp = f.layoutParams
         if (lp != null) {
-            lp.width = dp(if (type == 0) 110 else 120)
-            lp.height = dp(if (type == 0) 140 else 185)
+            lp.width = dp((box.first * k).toInt())
+            lp.height = dp((box.second * k).toInt())
             f.layoutParams = lp
         }
         f.invalidate()

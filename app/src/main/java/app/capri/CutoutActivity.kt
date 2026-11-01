@@ -26,10 +26,13 @@ class CutoutActivity : Activity() {
     private lateinit var wandBtn: Button
     private lateinit var brushBtn: Button
     private var original: Bitmap? = null
+    private lateinit var boxBtn: Button
+    private var body = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        body = intent?.getStringExtra("target") == "body"
         val uri = intent?.data
         val bmp = if (uri != null) decode(uri) else null
         if (bmp == null) {
@@ -57,14 +60,18 @@ class CutoutActivity : Activity() {
         root.setPadding(pad, pad + dp(16), pad, pad)
 
         val title = TextView(this)
-        title.text = "RECORTAR O BONECO"
+        title.text = if (body) "RECORTAR O CORPO E O CABELO" else "RECORTAR O BONECO"
         title.setTextColor(INK)
         title.textSize = 18f
         title.setTypeface(null, Typeface.BOLD)
         root.addView(title)
 
         hint = TextView(this)
-        hint.text = "Toque no fundo para apagar. Pontinhos soltos somem sozinhos ao tocar em Pronto. Se sobrar fundo, aumente a tolerância. Se apagar demais, diminua ou use Desfazer."
+        hint.text = if (body) {
+            "Toque no fundo para apagar com a Varinha. Para tirar cantos, molduras ou outras figuras que não fazem parte, use Caixa (arraste um retângulo) ou Pincel. Se sobrar fundo, aumente a tolerância. Se apagar demais, diminua ou use Desfazer."
+        } else {
+            "Toque no fundo para apagar. Pontinhos soltos somem sozinhos ao tocar em Pronto. Se sobrar fundo, aumente a tolerância. Se apagar demais, diminua ou use Desfazer."
+        }
         hint.setTextColor(DIM)
         hint.textSize = 13f
         hint.setPadding(0, dp(6), 0, dp(10))
@@ -80,10 +87,14 @@ class CutoutActivity : Activity() {
         wandBtn.text = "Varinha"
         brushBtn = Button(this)
         brushBtn.text = "Pincel"
+        boxBtn = Button(this)
+        boxBtn.text = "Caixa"
         wandBtn.setOnClickListener { setTool(CutoutView.Tool.WAND) }
         brushBtn.setOnClickListener { setTool(CutoutView.Tool.BRUSH) }
+        boxBtn.setOnClickListener { setTool(CutoutView.Tool.BOX) }
         tools.addView(wandBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         tools.addView(brushBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tools.addView(boxBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(tools)
         setTool(CutoutView.Tool.WAND)
 
@@ -126,7 +137,7 @@ class CutoutActivity : Activity() {
         val done = Button(this)
         done.text = "Pronto"
         done.setOnClickListener {
-            val out = cutView.finish()
+            val out = cutView.finish(body)
             if (out == null) {
                 hint.text = "A imagem ficou vazia. Toque em Desfazer para voltar."
             } else {
@@ -147,12 +158,13 @@ class CutoutActivity : Activity() {
         cutView.tool = t
         wandBtn.alpha = if (t == CutoutView.Tool.WAND) 1f else 0.5f
         brushBtn.alpha = if (t == CutoutView.Tool.BRUSH) 1f else 0.5f
+        boxBtn.alpha = if (t == CutoutView.Tool.BOX) 1f else 0.5f
     }
 
     private fun save(bmp: Bitmap, cut: Boolean) {
-        val f = File(filesDir, "capri.png")
+        val f = File(filesDir, if (body) "capri_body.png" else "capri.png")
         f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        prefs.cutout = cut
+        if (!body) prefs.cutout = cut
     }
 
     private fun decode(uri: Uri): Bitmap? {

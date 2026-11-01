@@ -26,13 +26,21 @@ class BodyView(context: Context) : View(context) {
 
     enum class Pose { IDLE, WAVE, DANCE, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN }
 
-    /** 0 sem corpo, 1 fofo, 2 esguio, 3 robô. */
+    /** 0 sem corpo, 1 fofo, 2 esguio, 3 robô, 4 imagem de corpo e cabelo escolhida pela pessoa. */
     var bodyType: Int = 0
 
     var bodyColor: Int = 0xFF46F0D4.toInt()
 
     /** True: imagem recortada (cabe inteira). False: foto com cantos arredondados. */
     var cutout: Boolean = true
+
+    /** Posição do rosto sobre a imagem do corpo (frações da largura e da altura). */
+    var faceX = 0.5f
+    var faceY = 0.3f
+    var faceW = 0.2f
+
+    private var sprite: Bitmap? = null
+    private val spritePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     private var head: Drawable? = null
     private var headW = 1
@@ -92,6 +100,25 @@ class BodyView(context: Context) : View(context) {
             headH = max(1, fallback?.intrinsicHeight ?: 1)
         }
         invalidate()
+    }
+
+    fun setSprite(b: Bitmap?) {
+        sprite = b
+        invalidate()
+    }
+
+    /** Tipo de corpo que vale agora: sem imagem de corpo, o tipo 4 cai para o fofo. */
+    fun effType(): Int = if (bodyType == 4 && sprite == null) 1 else bodyType
+
+    /** Tamanho da figura em dp, antes da escala escolhida. */
+    fun boxDp(): Pair<Int, Int> {
+        val sp = sprite
+        if (effType() == 4 && sp != null) {
+            val h = 190
+            val w = (h * sp.width / sp.height.toFloat()).coerceIn(90f, 190f).toInt()
+            return Pair(w, h)
+        }
+        return if (effType() == 0) Pair(110, 140) else Pair(120, 185)
     }
 
     fun setPose(p: Pose, durationMs: Long = 0L) {
@@ -211,7 +238,9 @@ class BodyView(context: Context) : View(context) {
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
-        val shape: Shape? = when (bodyType) {
+        val type = effType()
+        if (type == 4) spriteExtra(s, pose, t)
+        val shape: Shape? = when (type) {
             1 -> chibi
             2 -> slim
             3 -> robot
@@ -224,7 +253,9 @@ class BodyView(context: Context) : View(context) {
         canvas.scale(s.sx, s.sy)
         canvas.translate(-w / 2f, -h + s.bob * dp)
 
-        if (shape != null) {
+        if (type == 4) {
+            drawSprite(canvas, s, w, h)
+        } else if (shape != null) {
             drawBody(canvas, shape, s, w, h)
             drawHead(canvas, 0.06f * w, 0f, 0.94f * w, shape.headBottom * h, s.tilt)
         } else {
@@ -233,6 +264,37 @@ class BodyView(context: Context) : View(context) {
         canvas.restore()
 
         postInvalidateDelayed(33)
+    }
+
+    /** Na imagem inteira só dá para mexer a figura toda, então reforça alguns gestos. */
+    private fun spriteExtra(s: St, p: Pose, t: Float) {
+        when (p) {
+            Pose.WAVE -> {
+                s.sway += sin(t * 9f) * 4f
+                s.bob -= abs(sin(t * 9f)) * 3f
+            }
+            Pose.TALK -> s.sy += sin(t * 9f) * 0.02f
+            Pose.STRETCH -> s.sy += 0.04f * min(1f, t * 3f)
+            else -> {}
+        }
+    }
+
+    private fun drawSprite(canvas: Canvas, s: St, w: Float, h: Float) {
+        val b = sprite ?: return
+        val sc = min(w / b.width, h / b.height)
+        val dw = b.width * sc
+        val dh = b.height * sc
+        val l = (w - dw) / 2f
+        val t = h - dh
+        rect.set(l, t, l + dw, t + dh)
+        canvas.drawBitmap(b, null, rect, spritePaint)
+        val d = head ?: return
+        val cx = l + faceX * dw
+        val cy = t + faceY * dh
+        canvas.save()
+        canvas.rotate(s.tilt, cx, cy)
+        FaceDraw.draw(canvas, d, headW, headH, cutout, cx, cy, faceW * dw, rect, clip)
+        canvas.restore()
     }
 
     private fun drawHead(canvas: Canvas, l: Float, t: Float, r: Float, b: Float, tilt: Float) {
@@ -324,6 +386,41 @@ class BodyView(context: Context) : View(context) {
             canvas.drawCircle(cx + pw * 0.22f, rect.centerY(), pw * 0.1f, fill)
         } else {
             canvas.drawCircle(cx, (sp.torsoTop + (sp.torsoBottom - sp.torsoTop) * 0.45f) * h, tw * 0.07f, fill)
+        }
+    }
+}
+
+/** Desenha o rosto da pessoa sobre a imagem do corpo. Usado pelo boneco e pela tela de ajuste. */
+object FaceDraw {
+    fun draw(
+        canvas: Canvas, d: Drawable, hw: Int, hh: Int, cutout: Boolean,
+        cx: Float, cy: Float, fw: Float, rect: RectF, clip: Path
+    ) {
+        val iw = max(1, hw)
+        val ih = max(1, hh)
+        if (cutout) {
+            val fh = fw * ih / iw
+            d.setBounds(
+                (cx - fw / 2f).toInt(), (cy - fh / 2f).toInt(),
+                (cx + fw / 2f).toInt(), (cy + fh / 2f).toInt()
+            )
+            d.draw(canvas)
+        } else {
+            val half = fw / 2f
+            rect.set(cx - half, cy - half, cx + half, cy + half)
+            clip.reset()
+            clip.addRoundRect(rect, half, half, Path.Direction.CW)
+            canvas.save()
+            canvas.clipPath(clip)
+            val sc = max(fw / iw, fw / ih)
+            val dw = iw * sc
+            val dh = ih * sc
+            d.setBounds(
+                (cx - dw / 2f).toInt(), (cy - dh / 2f).toInt(),
+                (cx + dw / 2f).toInt(), (cy + dh / 2f).toInt()
+            )
+            d.draw(canvas)
+            canvas.restore()
         }
     }
 }

@@ -102,6 +102,32 @@ class Prefs(context: Context) {
             sp.edit().putInt("bodyColor", value).apply()
         }
 
+    /** Onde fica o rosto sobre a imagem do corpo: centro e largura, como fração da imagem. */
+    var faceX: Float
+        get() = sp.getFloat("faceX", 0.5f)
+        set(value) {
+            sp.edit().putFloat("faceX", value).apply()
+        }
+
+    var faceY: Float
+        get() = sp.getFloat("faceY", 0.3f)
+        set(value) {
+            sp.edit().putFloat("faceY", value).apply()
+        }
+
+    var faceW: Float
+        get() = sp.getFloat("faceW", 0.2f)
+        set(value) {
+            sp.edit().putFloat("faceW", value).apply()
+        }
+
+    /** Tamanho da figura na tela, 0.6 a 1.6. */
+    var figureScale: Float
+        get() = sp.getFloat("figureScale", 1.0f)
+        set(value) {
+            sp.edit().putFloat("figureScale", value).apply()
+        }
+
     /** Faz poses e danças sozinha de vez em quando. */
     var moves: Boolean
         get() = sp.getBoolean("moves", true)

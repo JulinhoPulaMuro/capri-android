@@ -20,7 +20,7 @@ object ImageOps {
     }
 
     /** Tira 1 pixel da borda (restos do fundo) e remove pontinhos soltos. */
-    fun clean(px: IntArray, w: Int, h: Int) {
+    fun clean(px: IntArray, w: Int, h: Int, keepSmall: Boolean = false) {
         val solid = BooleanArray(w * h)
         for (i in 0 until w * h) {
             solid[i] = (px[i] ushr 24) > 10
@@ -33,11 +33,11 @@ object ImageOps {
                 }
             }
         }
-        keepBig(px, w, h)
+        keepBig(px, w, h, keepSmall)
     }
 
     /** Mantém só as partes grandes e conectadas da imagem. */
-    private fun keepBig(px: IntArray, w: Int, h: Int) {
+    private fun keepBig(px: IntArray, w: Int, h: Int, keepSmall: Boolean) {
         val n = w * h
         val label = IntArray(n)
         val stack = IntArray(n)
@@ -78,7 +78,8 @@ object ImageOps {
         for (i in 1 until sizes.size) {
             if (sizes[i] > big) big = sizes[i]
         }
-        val min = maxOf(30, (big * 0.005).toInt())
+        // com keepSmall (cabelo cheio de pontas soltas) só some o que é pó mesmo
+        val min = if (keepSmall) maxOf(8, (big * 0.0003).toInt()) else maxOf(30, (big * 0.005).toInt())
         for (q in 0 until n) {
             val l = label[q]
             if (l != 0 && sizes[l] < min) px[q] = 0

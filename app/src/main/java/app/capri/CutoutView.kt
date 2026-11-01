@@ -14,7 +14,7 @@ import android.view.View
 /** Tela de recorte: a varinha apaga o fundo, o pincel apaga à mão. */
 class CutoutView(context: Context) : View(context) {
 
-    enum class Tool { WAND, BRUSH }
+    enum class Tool { WAND, BRUSH, BOX }
 
     var tool: Tool = Tool.WAND
 
@@ -37,6 +37,17 @@ class CutoutView(context: Context) : View(context) {
         strokeJoin = Paint.Join.ROUND
     }
     private var brushing = false
+    private var boxing = false
+    private var boxX0 = 0f
+    private var boxY0 = 0f
+    private var boxX1 = 0f
+    private var boxY1 = 0f
+    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#FF4F9D")
+        strokeWidth = 3f
+    }
+    private val boxFill = Paint().apply { color = Color.parseColor("#55FF4F9D") }
     private var lastX = 0f
     private var lastY = 0f
 
@@ -57,13 +68,13 @@ class CutoutView(context: Context) : View(context) {
     }
 
     /** Aplica a limpeza final e devolve o boneco cortado. Null se não sobrou nada. */
-    fun finish(): Bitmap? {
+    fun finish(keepSmall: Boolean = false): Bitmap? {
         val b = bitmap ?: return null
         val w = b.width
         val h = b.height
         val px = IntArray(w * h)
         b.getPixels(px, 0, w, 0, 0, w, h)
-        ImageOps.clean(px, w, h)
+        ImageOps.clean(px, w, h, keepSmall)
         return ImageOps.trim(px, w, h)
     }
 
@@ -168,6 +179,27 @@ class CutoutView(context: Context) : View(context) {
         }
         canvas.restore()
         canvas.drawBitmap(b, null, dst, bitmapPaint)
+        if (boxing) {
+            val l = minOf(boxX0, boxX1) * dst.width() / b.width + dst.left
+            val r = maxOf(boxX0, boxX1) * dst.width() / b.width + dst.left
+            val t = minOf(boxY0, boxY1) * dst.height() / b.height + dst.top
+            val bt = maxOf(boxY0, boxY1) * dst.height() / b.height + dst.top
+            canvas.drawRect(l, t, r, bt, boxFill)
+            canvas.drawRect(l, t, r, bt, boxPaint)
+        }
+    }
+
+    private fun eraseBox() {
+        val c = bitmapCanvas ?: return
+        val b = bitmap ?: return
+        val l = minOf(boxX0, boxX1).coerceIn(0f, b.width.toFloat())
+        val r = maxOf(boxX0, boxX1).coerceIn(0f, b.width.toFloat())
+        val t = minOf(boxY0, boxY1).coerceIn(0f, b.height.toFloat())
+        val bt = maxOf(boxY0, boxY1).coerceIn(0f, b.height.toFloat())
+        if (r - l < 2f || bt - t < 2f) return
+        val p = Paint()
+        p.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+        c.drawRect(l, t, r, bt, p)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -180,7 +212,13 @@ class CutoutView(context: Context) : View(context) {
                 val inside = e.x >= dst.left && e.x <= dst.right && e.y >= dst.top && e.y <= dst.bottom
                 if (inside) {
                     pushUndo()
-                    if (tool == Tool.WAND) {
+                    if (tool == Tool.BOX) {
+                        boxing = true
+                        boxX0 = bx.toFloat()
+                        boxY0 = by.toFloat()
+                        boxX1 = boxX0
+                        boxY1 = boxY0
+                    } else if (tool == Tool.WAND) {
                         if (!wand(bx, by)) undo.removeAt(undo.size - 1)
                     } else {
                         brushing = true
@@ -192,7 +230,11 @@ class CutoutView(context: Context) : View(context) {
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                if (brushing) {
+                if (boxing) {
+                    boxX1 = bx.toFloat()
+                    boxY1 = by.toFloat()
+                    invalidate()
+                } else if (brushing) {
                     val nx = bx.toFloat()
                     val ny = by.toFloat()
                     stroke(lastX, lastY, nx, ny)
@@ -203,6 +245,17 @@ class CutoutView(context: Context) : View(context) {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 brushing = false
+                if (boxing) {
+                    boxing = false
+                    if (e.actionMasked == MotionEvent.ACTION_UP) {
+                        boxX1 = bx.toFloat()
+                        boxY1 = by.toFloat()
+                        eraseBox()
+                    } else if (undo.isNotEmpty()) {
+                        undo.removeAt(undo.size - 1)
+                    }
+                    invalidate()
+                }
             }
         }
         return true
