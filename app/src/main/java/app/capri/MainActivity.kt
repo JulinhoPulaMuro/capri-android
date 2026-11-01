@@ -153,6 +153,17 @@ class MainActivity : Activity() {
             }
         }
         col.addView(hide)
+        val chat = Switch(this)
+        chat.text = "A Capri fala coisas sozinha de vez em quando"
+        chat.setTextColor(INK)
+        chat.isChecked = prefs.chatter
+        chat.setOnCheckedChangeListener { _, checked ->
+            prefs.chatter = checked
+            if (OverlayService.running) {
+                startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_PREFS))
+            }
+        }
+        col.addView(chat)
 
         col.addView(heading("Comandos"))
         col.addView(body("Diga, por exemplo: \"Ok Capri, abrir WhatsApp\", \"pesquisar receita de bolo\", \"tocar Legião Urbana\", \"como chegar no aeroporto\", \"timer de 10 minutos\", \"alarme às 7 e meia\", \"ligar a lanterna\", \"que horas são\". Esses comandos funcionam sem gastar a IA. Pedidos em outras palavras a IA tenta entender."))

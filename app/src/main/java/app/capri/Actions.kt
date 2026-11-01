@@ -100,7 +100,14 @@ class Actions(private val ctx: Context) {
         if (idx < 0 && name.contains(" e ")) {
             idx = Commands.pickApp(name.substringBefore(" e "), labels)
         }
-        if (idx < 0) return "Não achei o app " + name + " aqui."
+        if (idx < 0) {
+            val near = Commands.suggest(name, labels, 3)
+            return if (near.isEmpty()) {
+                "Não achei o app " + name + " aqui."
+            } else {
+                "Não achei o app " + name + ". Parecidos: " + near.joinToString(", ") + "."
+            }
+        }
         val e = apps[idx]
         val i = Intent(Intent.ACTION_MAIN)
         i.addCategory(Intent.CATEGORY_LAUNCHER)

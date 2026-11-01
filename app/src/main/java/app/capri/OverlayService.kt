@@ -77,6 +77,9 @@ class OverlayService : Service() {
     private var hideTask: Runnable? = null
     private var dead = false
     private var engineInUse = ""
+    private val rnd = java.util.Random()
+    private var chatTask: Runnable? = null
+    private var userHidden = false
 
     private var state = State.OFF
     private var voiceTurn = false
@@ -108,11 +111,15 @@ class OverlayService : Service() {
         initTts()
         if (prefs.listenWake) {
             startWake()
-            say("Chip conectado. Diga \"Ok Capri\" ou toque em mim.", false)
+            say(Lines.greet(rnd), false)
         } else {
             setDot(DIM)
-            say("Chip conectado. A escuta está desligada. Toque em mim para escrever.", false)
+            say("Conectada, mas de ouvidos tapados: a escuta está desligada. Toque em mim para escrever.", false)
         }
+        shown = true
+        refreshTile()
+        scheduleAutoHide(9000L)
+        scheduleChatter()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -133,6 +140,7 @@ class OverlayService : Service() {
                 }
             }
             ACTION_SHOW -> summon()
+            ACTION_TOGGLE -> toggleShown()
         }
         return START_NOT_STICKY
     }
@@ -140,6 +148,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         running = false
         dead = true
+        shown = false
         refreshTile()
         main.removeCallbacksAndMessages(null)
         try {
@@ -428,12 +437,35 @@ class OverlayService : Service() {
 
     private fun setShown(on: Boolean) {
         root?.visibility = if (on) View.VISIBLE else View.GONE
+        shown = on
+        refreshTile()
     }
 
     private fun wakeUp() {
         val h = hideTask
         if (h != null) main.removeCallbacks(h)
+        userHidden = false
         setShown(true)
+    }
+
+    /** Esconde o boneco na hora, sem esperar. Ela continua ouvindo "Ok Capri". */
+    private fun hideNow() {
+        if (expanded) setExpanded(false)
+        val h = hideTask
+        if (h != null) main.removeCallbacks(h)
+        bubble?.visibility = View.GONE
+        userHidden = true
+        setShown(false)
+    }
+
+    /** Botão das configurações rápidas: aparece se estiver escondida, some se estiver à mostra. */
+    private fun toggleShown() {
+        if (shown) {
+            hideNow()
+        } else {
+            wakeUp()
+            say(Lines.ack(rnd), false)
+        }
     }
 
     /** Chamada pelo botão Chamar da notificação ou pelo atalho de configurações rápidas. */
@@ -443,7 +475,7 @@ class OverlayService : Service() {
         if (!expanded) setExpanded(true)
     }
 
-    private fun scheduleAutoHide() {
+    private fun scheduleAutoHide(delay: Long = 4000L) {
         val old = hideTask
         if (old != null) main.removeCallbacks(old)
         if (!prefs.autoHide || dead) return
@@ -454,7 +486,7 @@ class OverlayService : Service() {
             }
         }
         hideTask = t
-        main.postDelayed(t, 15000)
+        main.postDelayed(t, delay)
     }
 
     private fun refreshTile() {
@@ -491,6 +523,7 @@ class OverlayService : Service() {
 
     private fun applyWakePref() {
         if (prefs.autoHide) scheduleAutoHide() else wakeUp()
+        scheduleChatter()
         if (prefs.listenWake) {
             if (state == State.OFF) startWake()
         } else {
@@ -677,7 +710,7 @@ class OverlayService : Service() {
         stopListening()
         state = State.COMMAND
         setDot(HOT)
-        say("Pode falar…", true)
+        say(Lines.ack(rnd), true)
         beep()
         main.postDelayed({ listen() }, 350)
     }
@@ -712,6 +745,12 @@ class OverlayService : Service() {
         }
         voiceTurn = voice
         val cmd = Commands.parse(q)
+        if (cmd != null && cmd.kind == "HIDE") {
+            hideNow()
+            val line = Lines.hide(rnd)
+            if (voice && prefs.speak && ttsReady) speak(line) else startWake()
+            return
+        }
         if (cmd != null) {
             val said = Actions(this).run(cmd)
             finishTurn(said, true)
@@ -778,16 +817,16 @@ class OverlayService : Service() {
             trimHistory()
             prefs.saveHistory(history)
         }
-        var shown = text
+        var out = text
         if (ok) {
             val parts = Commands.extractTags(text)
-            shown = if (parts.first.isEmpty()) "Pronto." else parts.first
+            out = if (parts.first.isEmpty()) "Pronto." else parts.first
             for (a in parts.second.take(2)) {
                 val r = Actions(this).run(a)
-                if (Actions.failed(r)) shown = shown + " " + r
+                if (Actions.failed(r)) out = out + " " + r
             }
         }
-        finishTurn(shown, ok)
+        finishTurn(out, ok)
     }
 
     private fun finishTurn(text: String, speakIt: Boolean) {
@@ -796,7 +835,34 @@ class OverlayService : Service() {
             speak(text)
         } else {
             startWake()
+            scheduleAutoHide((4000L + text.length * 45L).coerceAtMost(15000L))
         }
+    }
+
+    // ---------- falas soltas ----------
+
+    private fun scheduleChatter() {
+        val old = chatTask
+        if (old != null) main.removeCallbacks(old)
+        if (!prefs.chatter || dead) return
+        val t = Runnable { chatterTick() }
+        chatTask = t
+        main.postDelayed(t, 240000L + rnd.nextInt(300000))
+    }
+
+    /** De tempos em tempos ela solta uma frase, se estiver quieta e o celular não estiver ocupado. */
+    private fun chatterTick() {
+        if (dead) return
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val busy = am.isMusicActive || am.mode != AudioManager.MODE_NORMAL
+        val idle = (state == State.WAKE || state == State.OFF) && !expanded
+        if (prefs.chatter && idle && !busy && !userHidden) {
+            wakeUp()
+            stopListening()
+            voiceTurn = true
+            finishTurn(Lines.idle(rnd, java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)), true)
+        }
+        scheduleChatter()
     }
 
     private fun trimHistory() {
@@ -899,6 +965,11 @@ class OverlayService : Service() {
         const val ACTION_RELOAD = "app.capri.RELOAD"
         const val ACTION_PREFS = "app.capri.PREFS"
         const val ACTION_SHOW = "app.capri.SHOW"
+        const val ACTION_TOGGLE = "app.capri.TOGGLE"
+
+        /** True quando o boneco está à mostra na tela. */
+        @Volatile
+        var shown = false
 
         private const val CHANNEL = "capri"
         private const val NOTIF_ID = 1

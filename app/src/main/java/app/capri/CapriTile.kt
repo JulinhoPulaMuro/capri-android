@@ -15,7 +15,7 @@ class CapriTile : TileService() {
 
     override fun onClick() {
         if (OverlayService.running) {
-            startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
+            startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_TOGGLE))
             return
         }
         val i = Intent(this, StartActivity::class.java)
@@ -31,7 +31,11 @@ class CapriTile : TileService() {
     private fun refresh() {
         val t = qsTile ?: return
         t.label = "Capri"
-        t.state = if (OverlayService.running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        val on = OverlayService.running && OverlayService.shown
+        t.state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        if (Build.VERSION.SDK_INT >= 29) {
+            t.setSubtitle(if (!OverlayService.running) "Desligada" else if (OverlayService.shown) "À mostra" else "Escondida")
+        }
         t.updateTile()
     }
 }

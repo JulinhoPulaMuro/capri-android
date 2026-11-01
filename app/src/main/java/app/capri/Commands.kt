@@ -110,6 +110,11 @@ object Commands {
         if (t.isEmpty()) return null
         val tn = numberize(t)
 
+        // esconder o boneco
+        if (Regex("^(?:se )?(?:escond\\w*|sum(?:ir|a|i)|some|desaparec\\w*)(?: (?:daqui|agora|da tela|ai|o boneco))?$|^sai(?:r)? (?:da tela|daqui)$|^vai embora$|^tchau$").containsMatchIn(t)) {
+            return Action("HIDE")
+        }
+
         // lanterna
         if (t.contains("lanterna")) {
             val off = Regex("\\b(?:apag\\w*|deslig\\w*|fecha\\w*|desativ\\w*)").containsMatchIn(t)
@@ -224,6 +229,10 @@ object Commands {
         "watsap" to listOf("whatsapp"), "whatsap" to listOf("whatsapp"), "uatsap" to listOf("whatsapp"),
         "insta" to listOf("instagram"), "face" to listOf("facebook"), "yt" to listOf("youtube"),
         "tiktok" to listOf("tiktok"), "twitter" to listOf("twitter", "x"),
+        "youtubemusic" to listOf("ytmusic", "youtubemusic", "youtubemusica"),
+        "ytmusic" to listOf("ytmusic", "youtubemusic"),
+        "youtubemusica" to listOf("ytmusic", "youtubemusic"),
+        "musicadoyoutube" to listOf("ytmusic", "youtubemusic"),
         "camera" to listOf("camera"), "galeria" to listOf("galeria", "fotos", "photos", "gallery"),
         "fotos" to listOf("fotos", "photos", "galeria", "gallery"),
         "relogio" to listOf("relogio", "clock", "alarme"), "despertador" to listOf("relogio", "clock"),
@@ -268,7 +277,8 @@ object Commands {
         if (c.length >= 3 && label.startsWith(c)) return 80
         if (c.length >= 5 && lev(label, c) <= (if (c.length >= 8) 2 else 1)) return 70
         if (c.length >= 3 && label.contains(c)) return 60
-        if (label.length >= 4 && c.contains(label)) return 55
+        // o nome falado só contém o rótulo: vale se o rótulo cobre quase tudo (evita "youtube music" abrir "youtube")
+        if (label.length >= 4 && c.contains(label) && label.length * 10 >= c.length * 8) return 55
         return 0
     }
 
@@ -279,6 +289,12 @@ object Commands {
         cands.add(c0)
         val al = ALIASES[c0]
         if (al != null) cands.addAll(al)
+        if (c0.startsWith("google") && c0.length > 6) {
+            val rest = c0.removePrefix("google")
+            cands.add(rest)
+            val al2 = ALIASES[rest]
+            if (al2 != null) cands.addAll(al2)
+        }
         var best = -1
         var bestScore = 0
         var bestLen = Int.MAX_VALUE
@@ -297,6 +313,22 @@ object Commands {
             }
         }
         return best
+    }
+
+    /** Até n rótulos parecidos com o nome falado, para avisar quando o app não for achado. */
+    fun suggest(name: String, labels: List<String>, n: Int): List<String> {
+        val c = compact(name)
+        if (c.isEmpty()) return emptyList()
+        val scored = ArrayList<Pair<Double, String>>()
+        for (lab in labels) {
+            val l = compact(lab)
+            if (l.isEmpty()) continue
+            var sim = 1.0 - lev(l, c).toDouble() / maxOf(l.length, c.length)
+            if (l.contains(c) || c.contains(l)) sim = maxOf(sim, 0.6)
+            if (l.take(3) == c.take(3)) sim = maxOf(sim, 0.5)
+            if (sim >= 0.45) scored.add(Pair(sim, lab))
+        }
+        return scored.sortedByDescending { it.first }.take(n).map { it.second }
     }
 
     // ---------- etiquetas que a IA pode devolver ----------

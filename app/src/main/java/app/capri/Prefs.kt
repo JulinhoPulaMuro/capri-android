@@ -77,6 +77,12 @@ class Prefs(context: Context) {
             sp.edit().putStringSet("female", HashSet<String>(value)).apply()
         }
 
+    var chatter: Boolean
+        get() = sp.getBoolean("chatter", true)
+        set(value) {
+            sp.edit().putBoolean("chatter", value).apply()
+        }
+
     var cutout: Boolean
         get() = sp.getBoolean("cutout", false)
         set(value) {
