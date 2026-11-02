@@ -2,6 +2,7 @@ package app.capri
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -11,6 +12,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.view.View
+import java.io.File
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -24,9 +26,7 @@ import kotlin.math.sin
  */
 class BodyView(context: Context) : View(context) {
 
-    enum class Pose { IDLE, WAVE, DANCE, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN }
-
-    /** 0 sem corpo, 1 fofo, 2 esguio, 3 robô, 4 imagem de corpo e cabelo escolhida pela pessoa. */
+    /** 0 sem corpo, 1 fofo, 2 esguio, 3 robô, 4 imagem inteira, 5 esqueleto com juntas. */
     var bodyType: Int = 0
 
     var bodyColor: Int = 0xFF46F0D4.toInt()
@@ -39,13 +39,24 @@ class BodyView(context: Context) : View(context) {
     var faceY = 0.3f
     var faceW = 0.2f
 
+    // corpo articulado (tipo 5)
+    private var rr: RigRenderer? = null
+    private val rigPose = RigPose()
+    private val mixPose = RigPose()
+    private val prevPose = RigPose()
+    private val lastShown = RigPose()
+    private var blendStart = 0L
+    private var hairAng = 0f
+    private var hairVel = 0f
+    private var lastDraw = 0L
+
     private var sprite: Bitmap? = null
     private val spritePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     private var head: Drawable? = null
     private var headW = 1
     private var headH = 1
-    private var pose = Pose.IDLE
+    private var pose = Move.IDLE
     private var poseStart = SystemClock.uptimeMillis()
     private var poseUntil = 0L
 
@@ -107,11 +118,77 @@ class BodyView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** Tipo de corpo que vale agora: sem imagem de corpo, o tipo 4 cai para o fofo. */
-    fun effType(): Int = if (bodyType == 4 && sprite == null) 1 else bodyType
+    /** Prepara o corpo articulado. Sem corpo, o tipo 5 cai para o fofo. */
+    fun setRig(hairFull: Bitmap?, bodyFull: Bitmap?, joints: FloatArray?) {
+        if (bodyFull == null) {
+            rr = null
+        } else {
+            val r = RigRenderer()
+            rr = if (r.set(hairFull, bodyFull, joints)) r else null
+        }
+        invalidate()
+    }
+
+    fun hasRig(): Boolean = rr != null
+
+    /** Lê as camadas do esqueleto (cabelo, corpo) e as juntas guardadas. */
+    fun loadRigFiles(prefs: Prefs) {
+        val dir = context.filesDir
+        val bf = File(dir, "rig_body.png")
+        if (!bf.exists()) {
+            setRig(null, null, null)
+            return
+        }
+        val bodyBmp = BitmapFactory.decodeFile(bf.absolutePath)
+        val hf = File(dir, "rig_hair.png")
+        val hairBmp = if (hf.exists()) BitmapFactory.decodeFile(hf.absolutePath) else null
+        setRig(hairBmp, bodyBmp, Rig.decode(prefs.rigJoints))
+    }
+
+    /** Copia tipo de corpo, cor e posição do rosto das configurações. */
+    fun applyPrefs(prefs: Prefs) {
+        bodyType = prefs.bodyType.coerceIn(0, 5)
+        bodyColor = prefs.bodyColor
+        if (bodyType == 5) {
+            faceX = prefs.rigFaceX
+            faceY = prefs.rigFaceY
+            faceW = prefs.rigFaceW
+        } else {
+            faceX = prefs.faceX
+            faceY = prefs.faceY
+            faceW = prefs.faceW
+        }
+    }
+
+    /** Empurrão no cabelo quando a janela se mexe: dx em pixels por quadro. */
+    fun kick(dx: Float) {
+        hairVel -= dx * 0.07f
+    }
+
+    /** Tipo de corpo que vale agora: sem imagem, o tipo 4 ou 5 cai para um corpo desenhado. */
+    fun effType(): Int = when {
+        bodyType == 5 && rr == null -> if (sprite != null) 4 else 1
+        bodyType == 4 && sprite == null -> 1
+        else -> bodyType
+    }
+
+    /** Fração da altura da figura que fica abaixo da sola dos pés. */
+    fun feetInsetFrac(): Float = if (effType() == 5) (rr?.feetFrac() ?: 0.02f) else 0.02f
+
+    /** Fração da altura da figura, de cima para baixo, onde começa o topo da cabeça. */
+    fun headTopFrac(): Float = if (effType() == 5) 0.10f else 0.03f
+
+    /** Fração da altura da figura que fica abaixo do quadril. */
+    fun pelvisFrac(): Float = if (effType() == 5) (rr?.pelvisFrac() ?: 0.42f) else 0.42f
 
     /** Tamanho da figura em dp, antes da escala escolhida. */
     fun boxDp(): Pair<Int, Int> {
+        val r = rr
+        if (effType() == 5 && r != null) {
+            val h = 200
+            val w = (h * r.frameAspect()).coerceIn(100f, 260f).toInt()
+            return Pair(w, h)
+        }
         val sp = sprite
         if (effType() == 4 && sp != null) {
             val h = 190
@@ -121,19 +198,33 @@ class BodyView(context: Context) : View(context) {
         return if (effType() == 0) Pair(110, 140) else Pair(120, 185)
     }
 
-    fun setPose(p: Pose, durationMs: Long = 0L) {
+    fun setPose(p: Move, durationMs: Long = 0L) {
+        if (p != pose) {
+            prevPose.copyFrom(lastShown)
+            blendStart = SystemClock.uptimeMillis()
+        }
         pose = p
         poseStart = SystemClock.uptimeMillis()
         poseUntil = if (durationMs > 0) poseStart + durationMs else 0L
         invalidate()
     }
 
-    fun currentPose(): Pose = pose
+    fun currentPose(): Move = pose
 
-    private fun compute(s: St, p: Pose, t: Float) {
+    private fun compute(s: St, p: Move, t: Float) {
         val pi = PI.toFloat()
         when (p) {
-            Pose.IDLE -> {
+            Move.DANCE2 -> compute(s, Move.DANCE, t * 1.3f)
+            Move.SIT, Move.SHRUG -> compute(s, Move.IDLE, t)
+            Move.CHEER -> compute(s, Move.HOP, t)
+            Move.FLY -> {
+                s.bob = sin(t * 2.5f) * 4f
+                s.sway = sin(t * 1.3f) * 3f
+                s.tilt = sin(t * 1.7f) * 4f
+                s.armL = -1.3f
+                s.armR = 1.3f
+            }
+            Move.IDLE -> {
                 val w = sin(t * 2.2f)
                 s.bob = w * 1.5f
                 s.sway = sin(t * 1.1f) * 1.5f
@@ -141,13 +232,13 @@ class BodyView(context: Context) : View(context) {
                 s.armL = -0.25f - w * 0.06f
                 s.armR = 0.25f + w * 0.06f
             }
-            Pose.WAVE -> {
+            Move.WAVE -> {
                 s.bob = sin(t * 3f)
                 s.armR = 2.5f + sin(t * 11f) * 0.35f
                 s.armL = -0.2f
                 s.tilt = 6f + sin(t * 5f) * 2f
             }
-            Pose.DANCE -> {
+            Move.DANCE -> {
                 val w = sin(t * 7f)
                 s.bob = -abs(w) * 8f
                 s.sway = w * 9f
@@ -157,7 +248,7 @@ class BodyView(context: Context) : View(context) {
                 s.legR = 0.2f + w * 0.35f
                 s.tilt = w * 8f
             }
-            Pose.HOP -> {
+            Move.HOP -> {
                 val ph = (t * 1.6f) % 1f
                 val up = sin(ph * pi)
                 s.bob = -up * 22f
@@ -170,13 +261,13 @@ class BodyView(context: Context) : View(context) {
                 s.legL = -0.1f - 0.2f * up
                 s.legR = 0.1f + 0.2f * up
             }
-            Pose.SPIN -> {
+            Move.SPIN -> {
                 s.sx = cos(t * 9f)
                 s.bob = -abs(sin(t * 9f)) * 4f
                 s.armL = -0.9f
                 s.armR = 0.9f
             }
-            Pose.STRETCH -> {
+            Move.STRETCH -> {
                 val ph = min(1f, t * 3f)
                 s.armL = -0.25f - 2.6f * ph
                 s.armR = 0.25f + 2.6f * ph
@@ -184,13 +275,13 @@ class BodyView(context: Context) : View(context) {
                 s.bob = -3f * ph
                 s.sway = sin(t * 6f) * ph
             }
-            Pose.LEAN -> {
+            Move.LEAN -> {
                 val ph = min(1f, t * 3f)
                 s.sway = 10f * ph
                 s.tilt = -8f * ph
                 s.armR = 0.6f
             }
-            Pose.WALK -> {
+            Move.WALK -> {
                 val w = sin(t * 10f)
                 s.bob = -abs(w) * 3f
                 s.legL = w * 0.5f
@@ -199,7 +290,7 @@ class BodyView(context: Context) : View(context) {
                 s.armR = 0.25f + w * 0.4f
                 s.sway = w * 2f
             }
-            Pose.TALK -> {
+            Move.TALK -> {
                 val w = abs(sin(t * 9f))
                 s.bob = -w * 3f
                 s.sway = sin(t * 4.5f) * 2f
@@ -207,14 +298,14 @@ class BodyView(context: Context) : View(context) {
                 s.armL = -0.4f + sin(t * 3f) * 0.25f
                 s.tilt = sin(t * 4.5f) * 3f
             }
-            Pose.THINK -> {
+            Move.THINK -> {
                 s.tilt = 12f
                 s.sway = sin(t * 1.5f) * 3f
                 s.bob = sin(t * 2f)
                 s.armR = 2.2f
                 s.armL = -0.2f
             }
-            Pose.LISTEN -> {
+            Move.LISTEN -> {
                 s.sway = 5f
                 s.tilt = 8f + sin(t * 3f) * 2f
                 s.bob = sin(t * 3f)
@@ -226,19 +317,24 @@ class BodyView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         val now = SystemClock.uptimeMillis()
         if (poseUntil != 0L && now > poseUntil) {
-            pose = Pose.IDLE
+            pose = Move.IDLE
             poseStart = now
             poseUntil = 0L
         }
         val t = (now - poseStart) / 1000f
-        val s = St()
-        compute(s, pose, t)
         val dp = resources.displayMetrics.density
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
         val type = effType()
+        if (type == 5) {
+            drawRig(canvas, now, t, w, h)
+            postInvalidateDelayed(33)
+            return
+        }
+        val s = St()
+        compute(s, pose, t)
         if (type == 4) spriteExtra(s, pose, t)
         val shape: Shape? = when (type) {
             1 -> chibi
@@ -266,15 +362,37 @@ class BodyView(context: Context) : View(context) {
         postInvalidateDelayed(33)
     }
 
+    private fun drawRig(canvas: Canvas, now: Long, t: Float, w: Float, h: Float) {
+        val r = rr ?: return
+        Anim.pose(pose, t, rigPose)
+        val k0 = min(1f, (now - blendStart) / 260f)
+        val k = k0 * k0 * (3f - 2f * k0)
+        if (k >= 1f) mixPose.copyFrom(rigPose) else mixPose.mix(prevPose, rigPose, k)
+        lastShown.copyFrom(mixPose)
+
+        // o cabelo é uma mola: balança atrás da cabeça
+        val dt = if (lastDraw == 0L) 0.033f else min(0.05f, (now - lastDraw) / 1000f)
+        lastDraw = now
+        val target = -0.5f * mixPose.head - 0.3f * mixPose.tor
+        hairVel += ((target - hairAng) * 60f - hairVel * 5f) * dt
+        hairAng += hairVel * dt
+        hairAng = hairAng.coerceIn(-0.6f, 0.6f)
+
+        r.draw(
+            canvas, w, h, mixPose, hairAng, head, headW, headH, cutout,
+            faceX, faceY, faceW, rect, clip
+        )
+    }
+
     /** Na imagem inteira só dá para mexer a figura toda, então reforça alguns gestos. */
-    private fun spriteExtra(s: St, p: Pose, t: Float) {
+    private fun spriteExtra(s: St, p: Move, t: Float) {
         when (p) {
-            Pose.WAVE -> {
+            Move.WAVE -> {
                 s.sway += sin(t * 9f) * 4f
                 s.bob -= abs(sin(t * 9f)) * 3f
             }
-            Pose.TALK -> s.sy += sin(t * 9f) * 0.02f
-            Pose.STRETCH -> s.sy += 0.04f * min(1f, t * 3f)
+            Move.TALK -> s.sy += sin(t * 9f) * 0.02f
+            Move.STRETCH -> s.sy += 0.04f * min(1f, t * 3f)
             else -> {}
         }
     }

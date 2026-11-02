@@ -33,8 +33,11 @@ class FaceFitActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        val bf = File(filesDir, "capri_body.png")
-        val body = if (bf.exists()) BitmapFactory.decodeFile(bf.absolutePath) else null
+        val rigMode = intent?.getBooleanExtra("rig", false) == true
+        val body = if (rigMode) composeRig() else {
+            val bf = File(filesDir, "capri_body.png")
+            if (bf.exists()) BitmapFactory.decodeFile(bf.absolutePath) else null
+        }
         if (body == null) {
             setResult(RESULT_CANCELED)
             finish()
@@ -64,9 +67,9 @@ class FaceFitActivity : Activity() {
         root.addView(hint)
 
         fit = FitView(this, body, face, prefs.cutout || face == null, resources.getDrawable(R.drawable.ic_chip, theme))
-        fit.fx = prefs.faceX
-        fit.fy = prefs.faceY
-        fit.fw = prefs.faceW
+        fit.fx = if (rigMode) prefs.rigFaceX else prefs.faceX
+        fit.fy = if (rigMode) prefs.rigFaceY else prefs.faceY
+        fit.fw = if (rigMode) prefs.rigFaceW else prefs.faceW
         root.addView(fit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val row = LinearLayout(this)
@@ -106,9 +109,15 @@ class FaceFitActivity : Activity() {
         val done = Button(this)
         done.text = "Pronto"
         done.setOnClickListener {
-            prefs.faceX = fit.fx
-            prefs.faceY = fit.fy
-            prefs.faceW = fit.fw
+            if (rigMode) {
+                prefs.rigFaceX = fit.fx
+                prefs.rigFaceY = fit.fy
+                prefs.rigFaceW = fit.fw
+            } else {
+                prefs.faceX = fit.fx
+                prefs.faceY = fit.fy
+                prefs.faceW = fit.fw
+            }
             setResult(RESULT_OK)
             finish()
         }
@@ -117,6 +126,22 @@ class FaceFitActivity : Activity() {
         root.addView(buttons)
 
         setContentView(root)
+    }
+
+    /** Junta cabelo e corpo do esqueleto numa imagem só, só para mostrar. */
+    private fun composeRig(): Bitmap? {
+        val bf = File(filesDir, "rig_body.png")
+        if (!bf.exists()) return null
+        val b = BitmapFactory.decodeFile(bf.absolutePath) ?: return null
+        val out = Bitmap.createBitmap(b.width, b.height, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        val hf = File(filesDir, "rig_hair.png")
+        if (hf.exists()) {
+            val h = BitmapFactory.decodeFile(hf.absolutePath)
+            if (h != null) c.drawBitmap(h, 0f, 0f, null)
+        }
+        c.drawBitmap(b, 0f, 0f, null)
+        return out
     }
 
     private fun dp(n: Int): Int = (n * resources.displayMetrics.density).toInt()

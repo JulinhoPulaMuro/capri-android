@@ -29,6 +29,7 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 import java.util.Locale
 
@@ -55,6 +56,8 @@ class MainActivity : Activity() {
     private val swatches = ArrayList<Pair<View, Int>>()
     private lateinit var bodySpinner: Spinner
     private var poseIdx = 0
+    private var rigChain = false
+    private lateinit var rigStatus: TextView
     private var tts: TextToSpeech? = null
     private var voices: List<Voice> = emptyList()
 
@@ -217,11 +220,12 @@ class MainActivity : Activity() {
             "Fofa (cabeção e corpinho pequeno)",
             "Esguia (corpo alto e fino)",
             "Robô (quadradinho)",
-            "Minha imagem de corpo e cabelo"
+            "Minha imagem de corpo e cabelo",
+            "Esqueleto (meu corpo articulado)"
         )
         sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
         bodySpinner = sp
-        sp.setSelection(prefs.bodyType.coerceIn(0, 4))
+        sp.setSelection(prefs.bodyType.coerceIn(0, 5))
         sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                 if (pos != prefs.bodyType) {
@@ -229,6 +233,9 @@ class MainActivity : Activity() {
                     applyBodyPreview()
                     pushVoice()
                     if (pos == 4 && !File(filesDir, "capri_body.png").exists()) pickBody()
+                    if (pos == 5 && !File(filesDir, "rig_body.png").exists()) {
+                        Toast.makeText(this@MainActivity, "Primeiro faça o corpo articulado, nos botões logo abaixo.", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
 
@@ -239,6 +246,8 @@ class MainActivity : Activity() {
         col.addView(button("Escolher imagem do corpo e do cabelo") { pickBody() })
         col.addView(button("Posicionar o rosto no corpo") { openFit() })
         col.addView(body("Para ter o corpo e o cabelo que você quer: escolha uma imagem sua do corpo inteiro com cabelo (o app não traz nenhuma pronta), recorte o fundo, e depois posicione o rosto que você escolheu em \"3. Imagem da Capri\". Nessa opção a figura se mexe inteira, de uma vez: não tem braços e pernas separados."))
+
+        addRigSection(col)
 
         col.addView(body("Tamanho da figura"))
         col.addView(seek(((prefs.figureScale - 0.6f) * 100f).toInt().coerceIn(0, 100)) { p ->
@@ -289,6 +298,86 @@ class MainActivity : Activity() {
         col.addView(body("O corpo é um desenho simples feito de formas, para combinar com a imagem que você escolheu como rosto. Se a sua imagem já é o corpo inteiro, escolha \"Sem corpo\"."))
     }
 
+    private fun addRigSection(col: LinearLayout) {
+        col.addView(heading("Esqueleto (corpo articulado)"))
+        rigStatus = body("")
+        col.addView(rigStatus)
+        col.addView(body("Com isto a Capri ganha braços, pernas, mãos e pés que dobram de verdade: andar, sentar, voar, dançar, dar tchau. Você escolhe uma foto com o corpo inteiro, recorta só o cabelo, recorta só o corpo, coloca o rosto e marca onde ficam as juntas."))
+        col.addView(button("Fazer o corpo articulado (passo a passo)") {
+            rigChain = true
+            pickRigPhoto()
+        })
+        col.addView(body("Ou refazer só um passo:"))
+        col.addView(button("1. Escolher a foto do corpo inteiro") {
+            rigChain = false
+            pickRigPhoto()
+        })
+        col.addView(button("2. Recortar só o cabelo") {
+            rigChain = false
+            openRigCut("rig_hair", REQ_RIG_HAIR)
+        })
+        col.addView(button("3. Recortar só o corpo") {
+            rigChain = false
+            openRigCut("rig_body", REQ_RIG_BODY)
+        })
+        col.addView(button("4. Posicionar o rosto") {
+            rigChain = false
+            openRigFace()
+        })
+        col.addView(button("5. Colocar o esqueleto (juntas) e testar") {
+            rigChain = false
+            openRigEdit()
+        })
+        col.addView(body("O app não traz nenhum corpo pronto: a figura é feita da sua foto. Se a foto for de frente, com os braços e as pernas um pouco afastados do corpo, o resultado fica bem melhor."))
+    }
+
+    private fun rigStatusText(): String {
+        fun m(ok: Boolean) = if (ok) "[ok] " else "[  ] "
+        val src = File(filesDir, "rig_src.png").exists()
+        val hair = File(filesDir, "rig_hair.png").exists()
+        val bodyOk = File(filesDir, "rig_body.png").exists()
+        val joints = Rig.decode(prefs.rigJoints) != null
+        return m(src) + "1. Foto\n" + m(hair) + "2. Cabelo\n" + m(bodyOk) + "3. Corpo\n" +
+            "[..] 4. Rosto (usa a imagem do rosto da Capri)\n" + m(joints) + "5. Esqueleto"
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pickRigPhoto() {
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+        i.type = "image/*"
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        startActivityForResult(i, REQ_RIG_PICK)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openRigCut(target: String, req: Int) {
+        if (!File(filesDir, "rig_src.png").exists()) {
+            pickRigPhoto()
+            return
+        }
+        val i = Intent(this, CutoutActivity::class.java)
+        i.putExtra("target", target)
+        startActivityForResult(i, req)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openRigFace() {
+        if (!File(filesDir, "rig_body.png").exists()) {
+            Toast.makeText(this, "Faça antes o recorte do corpo (passo 3).", Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivityForResult(Intent(this, FaceFitActivity::class.java).putExtra("rig", true), REQ_RIG_FACE)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openRigEdit() {
+        if (!File(filesDir, "rig_body.png").exists()) {
+            Toast.makeText(this, "Faça antes o recorte do corpo (passo 3).", Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivityForResult(Intent(this, RigEditActivity::class.java), REQ_RIG_EDIT)
+    }
+
     private fun paintSwatches() {
         for (pr in swatches) {
             val on = pr.second == prefs.bodyColor
@@ -301,11 +390,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyBodyPreview() {
-        bodyPreview.bodyType = prefs.bodyType.coerceIn(0, 4)
-        bodyPreview.bodyColor = prefs.bodyColor
-        bodyPreview.faceX = prefs.faceX
-        bodyPreview.faceY = prefs.faceY
-        bodyPreview.faceW = prefs.faceW
+        bodyPreview.applyPrefs(prefs)
         val box = bodyPreview.boxDp()
         val k = prefs.figureScale.coerceIn(0.6f, 1.6f)
         val lp = bodyPreview.layoutParams
@@ -334,9 +419,8 @@ class MainActivity : Activity() {
 
     private fun nextPose() {
         val all = arrayOf(
-            BodyView.Pose.WAVE, BodyView.Pose.DANCE, BodyView.Pose.HOP, BodyView.Pose.SPIN,
-            BodyView.Pose.STRETCH, BodyView.Pose.LEAN, BodyView.Pose.WALK, BodyView.Pose.THINK,
-            BodyView.Pose.LISTEN, BodyView.Pose.TALK
+            Move.WAVE, Move.DANCE, Move.DANCE2, Move.HOP, Move.SPIN, Move.STRETCH, Move.LEAN,
+            Move.WALK, Move.SIT, Move.FLY, Move.CHEER, Move.SHRUG, Move.THINK, Move.LISTEN, Move.TALK
         )
         poseIdx = (poseIdx + 1) % all.size
         bodyPreview.setPose(all[poseIdx], 3000L)
@@ -681,6 +765,35 @@ class MainActivity : Activity() {
         } else if (requestCode == REQ_FIT && resultCode == RESULT_OK) {
             refresh()
             pushReload()
+        } else if (requestCode == REQ_RIG_PICK && resultCode == RESULT_OK) {
+            val uri = data?.data
+            if (uri != null) {
+                val i = Intent(this, CutoutActivity::class.java)
+                i.data = uri
+                i.putExtra("target", "rig_src")
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                startActivityForResult(i, REQ_RIG_SRC)
+            }
+        } else if (requestCode == REQ_RIG_SRC) {
+            refresh()
+            if (resultCode == RESULT_OK && rigChain) openRigCut("rig_hair", REQ_RIG_HAIR) else rigChain = false
+        } else if (requestCode == REQ_RIG_HAIR) {
+            refresh()
+            if (rigChain) openRigCut("rig_body", REQ_RIG_BODY)
+        } else if (requestCode == REQ_RIG_BODY) {
+            refresh()
+            if (resultCode == RESULT_OK && rigChain) openRigFace() else rigChain = false
+        } else if (requestCode == REQ_RIG_FACE) {
+            refresh()
+            pushReload()
+            if (resultCode == RESULT_OK && rigChain) openRigEdit() else rigChain = false
+        } else if (requestCode == REQ_RIG_EDIT) {
+            rigChain = false
+            if (resultCode == RESULT_OK) {
+                bodySpinner.setSelection(5)
+            }
+            refresh()
+            pushReload()
         } else if (requestCode == REQ_CUT && resultCode == RESULT_OK) {
             refresh()
             if (OverlayService.running) {
@@ -719,6 +832,8 @@ class MainActivity : Activity() {
         bodyPreview.cutout = prefs.cutout || bmp == null
         val bf = File(filesDir, "capri_body.png")
         bodyPreview.setSprite(if (bf.exists()) BitmapFactory.decodeFile(bf.absolutePath) else null)
+        bodyPreview.loadRigFiles(prefs)
+        rigStatus.text = rigStatusText()
         applyBodyPreview()
 
         val contacts = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
@@ -740,6 +855,12 @@ class MainActivity : Activity() {
         private const val REQ_BODY = 5
         private const val REQ_BODYCUT = 6
         private const val REQ_FIT = 7
+        private const val REQ_RIG_PICK = 8
+        private const val REQ_RIG_SRC = 9
+        private const val REQ_RIG_HAIR = 10
+        private const val REQ_RIG_BODY = 11
+        private const val REQ_RIG_FACE = 12
+        private const val REQ_RIG_EDIT = 13
         private val BG = 0xFF0B0A15.toInt()
         private val PANEL = 0xFF141229.toInt()
         private val INK = 0xFFEBE9FF.toInt()

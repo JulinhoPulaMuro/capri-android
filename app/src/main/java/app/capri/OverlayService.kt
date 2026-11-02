@@ -1,8 +1,5 @@
 package app.capri
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,6 +10,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Icon
@@ -23,6 +23,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.service.quicksettings.TileService
 import android.speech.RecognitionListener
@@ -38,7 +39,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -65,20 +65,48 @@ class OverlayService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
 
-    private var params: WindowManager.LayoutParams? = null
-    private var root: LinearLayout? = null
-    private var bubble: TextView? = null
-    private var inputRow: LinearLayout? = null
-    private var input: EditText? = null
+    // três janelas: a figura, o balão de fala dela e a caixa de escrever
+    private var charRoot: FrameLayout? = null
+    private var charParams: WindowManager.LayoutParams? = null
+    private var charAttached = false
     private var figure: BodyView? = null
     private var dot: View? = null
-    private var moveTask: Runnable? = null
-    private var walker: ValueAnimator? = null
     private var headIsFallback = false
+    private var bubbleRoot: LinearLayout? = null
+    private var bubbleParams: WindowManager.LayoutParams? = null
+    private var bubbleText: TextView? = null
+    private var bubbleTail: TailView? = null
+    private var bubbleAttached = false
+    private var bubbleDirty = true
+    private var bubbleW = 0
+    private var bubbleH = 0
     private var hideBubble: Runnable? = null
+    private var inputRoot: LinearLayout? = null
+    private var inputParams: WindowManager.LayoutParams? = null
+    private var input: EditText? = null
+    private var inputAdded = false
+    private var inputW = 0
+    private var inputH = 0
     private var expanded = false
-    private var savedY = 0
     private var hideTask: Runnable? = null
+
+    // posição e rotina dela (pixels da tela, canto de cima e da esquerda da janela da figura)
+    private var figW = 0
+    private var figH = 0
+    private var curX = 0f
+    private var curY = 0f
+    private var env: Env? = null
+    private var envDirty = true
+    private var envW = 0
+    private var envH = 0
+    private val acts = ArrayList<Choreo.Act>()
+    private var actIdx = 0
+    private var actStart = 0L
+    private var lastTick = 0L
+    private var dragging = false
+    private var touching = false
+    private val tmp2 = FloatArray(2)
+    private val planner = Choreo.Planner(java.util.Random())
     private var dead = false
     private var engineInUse = ""
     private val rnd = java.util.Random()
@@ -124,18 +152,21 @@ class OverlayService : Service() {
         refreshTile()
         scheduleAutoHide(9000L)
         scheduleChatter()
-        figure?.setPose(BodyView.Pose.WAVE, 2200L)
-        scheduleMove()
+        if (prefs.moves) queueGesture(Move.WAVE, 2200L)
+        lastTick = SystemClock.uptimeMillis()
+        main.post(tickRunnable)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
-            ACTION_RELOAD -> loadFigure()
+            ACTION_RELOAD -> {
+                loadFigure()
+                resetActs()
+            }
             ACTION_PREFS -> {
                 applyBody()
-                if (!prefs.moves || !prefs.wander) stopWalk()
-                scheduleMove()
+                resetActs()
                 applyWakePref()
                 if (prefs.ttsEngine != engineInUse) {
                     tts?.stop()
@@ -159,7 +190,6 @@ class OverlayService : Service() {
         dead = true
         shown = false
         refreshTile()
-        stopWalk()
         main.removeCallbacksAndMessages(null)
         try {
             recognizer?.destroy()
@@ -170,15 +200,18 @@ class OverlayService : Service() {
         tts?.stop()
         tts?.shutdown()
         tts = null
-        val r = root
-        if (r != null) {
-            try {
-                wm.removeView(r)
-            } catch (e: Exception) {
-                // ignora
+        for (v in listOf<View?>(charRoot, bubbleRoot, if (inputAdded) inputRoot else null)) {
+            if (v != null) {
+                try {
+                    wm.removeView(v)
+                } catch (e: Exception) {
+                    // ignora
+                }
             }
         }
-        root = null
+        charRoot = null
+        bubbleRoot = null
+        inputRoot = null
         io.shutdownNow()
         super.onDestroy()
     }
@@ -227,27 +260,98 @@ class OverlayService : Service() {
         }
     }
 
-    // ---------- janela flutuante ----------
+    // ---------- janelas flutuantes ----------
+    // Três janelas separadas: a figura (que anda, voa e senta), o balão de fala dela
+    // (preso em cima da cabeça) e a caixa de escrever (solta, que a pessoa arrasta).
+
+    private val tickRunnable = Runnable { tick() }
+
+    @Suppress("DEPRECATION")
+    private fun screenSize(): IntArray {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val b = wm.maximumWindowMetrics.bounds
+            return intArrayOf(b.width(), b.height())
+        }
+        val dm = android.util.DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(dm)
+        return intArrayOf(dm.widthPixels, dm.heightPixels)
+    }
+
+    private fun dpf(n: Int): Float = n * resources.displayMetrics.density
+
+    private fun overlayParams(focusable: Boolean): WindowManager.LayoutParams {
+        var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        val p = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            flags,
+            PixelFormat.TRANSLUCENT
+        )
+        p.gravity = Gravity.TOP or Gravity.START
+        p.x = 0
+        p.y = 0
+        return p
+    }
 
     private fun buildOverlay(): Boolean {
-        val r = LinearLayout(this)
-        r.orientation = LinearLayout.VERTICAL
-        r.gravity = Gravity.END
+        // 1) a figura
+        val fr = FrameLayout(this)
+        val img = BodyView(this)
+        fr.addView(img, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val d = View(this)
+        d.background = oval(TEAL)
+        val dl = FrameLayout.LayoutParams(dp(12), dp(12), Gravity.TOP or Gravity.END)
+        dl.topMargin = dp(4)
+        dl.rightMargin = dp(4)
+        fr.addView(d, dl)
 
+        // 2) o balão de fala dela, com a pontinha para a cabeça
+        val br = LinearLayout(this)
+        br.orientation = LinearLayout.VERTICAL
+        br.gravity = Gravity.CENTER_HORIZONTAL
         val b = TextView(this)
         b.setTextColor(INK)
         b.textSize = 15f
         b.setPadding(dp(14), dp(10), dp(14), dp(10))
         b.maxWidth = dp(280)
-        b.maxHeight = dp(230)
+        b.maxHeight = dp(200)
         b.movementMethod = ScrollingMovementMethod()
         b.background = box(PANEL, TEAL, 12)
-        b.visibility = View.GONE
-        r.addView(b, LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dp(8) })
+        b.setOnClickListener { hideBubbleNow() }
+        br.addView(b, LinearLayout.LayoutParams(WRAP, WRAP))
+        val tl = TailView(this)
+        br.addView(tl, LinearLayout.LayoutParams(dp(18), dp(10)).apply { topMargin = -dp(1) })
+        br.visibility = View.GONE
+
+        // 3) a caixa onde a pessoa escreve: outra janela, que se arrasta pela alça
+        val ir = LinearLayout(this)
+        ir.orientation = LinearLayout.VERTICAL
+        ir.background = box(PANEL, TEAL, 14)
+        ir.setPadding(dp(8), dp(2), dp(8), dp(8))
+        val grip = LinearLayout(this)
+        grip.orientation = LinearLayout.HORIZONTAL
+        grip.gravity = Gravity.CENTER_VERTICAL
+        val gt = TextView(this)
+        gt.text = "≡  arraste aqui para mover"
+        gt.setTextColor(DIM)
+        gt.textSize = 12f
+        gt.setPadding(dp(4), dp(10), dp(4), dp(8))
+        grip.addView(gt, LinearLayout.LayoutParams(0, WRAP, 1f))
+        val close = TextView(this)
+        close.text = "Fechar"
+        close.setTextColor(DIM)
+        close.textSize = 12f
+        close.setPadding(dp(12), dp(10), dp(4), dp(8))
+        close.setOnClickListener { closeInput() }
+        grip.addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
+        ir.addView(grip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, WRAP))
 
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        row.visibility = View.GONE
         val et = EditText(this)
         et.hint = "Fale com a Capri"
         et.setHintTextColor(DIM)
@@ -266,7 +370,7 @@ class OverlayService : Service() {
                 false
             }
         }
-        row.addView(et, LinearLayout.LayoutParams(dp(200), WRAP))
+        row.addView(et, LinearLayout.LayoutParams(0, WRAP, 1f))
         val send = TextView(this)
         send.text = "Enviar"
         send.setTextColor(ON_TEAL)
@@ -278,46 +382,55 @@ class OverlayService : Service() {
         row.addView(send, LinearLayout.LayoutParams(WRAP, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             leftMargin = dp(6)
         })
-        r.addView(row, LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dp(8) })
+        ir.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, WRAP))
 
-        val fr = FrameLayout(this)
-        val img = BodyView(this)
-        fr.addView(img, FrameLayout.LayoutParams(dp(110), dp(140)))
-        val d = View(this)
-        d.background = oval(TEAL)
-        val dl = FrameLayout.LayoutParams(dp(12), dp(12), Gravity.TOP or Gravity.END)
-        dl.topMargin = dp(4)
-        dl.rightMargin = dp(4)
-        fr.addView(d, dl)
-        r.addView(fr, LinearLayout.LayoutParams(WRAP, WRAP))
+        val cp = overlayParams(false)
+        val bp = overlayParams(false)
+        val ip = overlayParams(true)
+        ip.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
 
-        val p = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        )
-        p.gravity = Gravity.BOTTOM or Gravity.END
-        p.x = if (prefs.posX >= 0) prefs.posX else dp(12)
-        p.y = if (prefs.posY >= 0) prefs.posY else dp(120)
+        charRoot = fr
+        charParams = cp
+        bubbleRoot = br
+        bubbleText = b
+        bubbleTail = tl
+        bubbleParams = bp
+        inputRoot = ir
+        inputParams = ip
+        input = et
+        figure = img
+        dot = d
+
+        loadFigure()
+
+        // posição inicial: a última onde a pessoa deixou, ou o canto de baixo à direita
+        val s = screenSize()
+        val env = ensureEnv()
+        if (prefs.charX >= 0 && prefs.charY >= 0) {
+            curX = prefs.charX.toFloat()
+            curY = prefs.charY.toFloat()
+        } else {
+            val ox = if (prefs.posX >= 0) prefs.posX else dp(12)
+            val oy = if (prefs.posY >= 0) prefs.posY else dp(120)
+            curX = (s[0] - figW - ox).toFloat()
+            curY = (s[1] - figH - oy).toFloat()
+        }
+        curX = env.clampX(curX)
+        curY = env.clampY(curY)
+        cp.x = curX.toInt()
+        cp.y = curY.toInt()
 
         try {
-            wm.addView(r, p)
+            wm.addView(fr, cp)
+            charAttached = true
+            wm.addView(br, bp)
+            bubbleAttached = true
         } catch (e: Exception) {
             toast("Não consegui mostrar o boneco sobre os outros apps.")
             return false
         }
-
-        root = r
-        bubble = b
-        inputRow = row
-        input = et
-        figure = img
-        dot = d
-        params = p
-        attachDrag(fr)
-        loadFigure()
+        attachCharTouch(fr)
+        attachInputDrag(grip)
         return true
     }
 
@@ -333,139 +446,263 @@ class OverlayService : Service() {
         }
         val bf = File(filesDir, "capri_body.png")
         img.setSprite(if (bf.exists()) BitmapFactory.decodeFile(bf.absolutePath) else null)
+        img.loadRigFiles(prefs)
         applyBody()
     }
 
-    /** Aplica o corpo escolhido e ajusta o tamanho da figura. */
+    /** Aplica o corpo escolhido e ajusta o tamanho da janela da figura. */
     private fun applyBody() {
         val f = figure ?: return
-        f.bodyType = prefs.bodyType.coerceIn(0, 4)
-        f.bodyColor = prefs.bodyColor
+        f.applyPrefs(prefs)
         f.cutout = prefs.cutout || headIsFallback
-        f.faceX = prefs.faceX
-        f.faceY = prefs.faceY
-        f.faceW = prefs.faceW
         val box = f.boxDp()
         val k = prefs.figureScale.coerceIn(0.6f, 1.6f)
-        val lp = f.layoutParams
-        if (lp != null) {
-            lp.width = dp((box.first * k).toInt())
-            lp.height = dp((box.second * k).toInt())
-            f.layoutParams = lp
+        figW = dp((box.first * k).toInt())
+        figH = dp((box.second * k).toInt())
+        val cp = charParams
+        val cr = charRoot
+        if (cp != null) {
+            cp.width = figW
+            cp.height = figH
+            if (charAttached && cr != null) {
+                try {
+                    wm.updateViewLayout(cr, cp)
+                } catch (e: Exception) {
+                    // janela já removida
+                }
+            }
         }
+        envDirty = true
         f.invalidate()
     }
 
-    // ---------- movimentos ----------
+    // ---------- o que ela faz sozinha ----------
 
-    private val poses = arrayOf(
-        BodyView.Pose.WAVE, BodyView.Pose.DANCE, BodyView.Pose.HOP,
-        BodyView.Pose.SPIN, BodyView.Pose.STRETCH, BodyView.Pose.LEAN
-    )
-
-    private fun scheduleMove() {
-        val old = moveTask
-        if (old != null) main.removeCallbacks(old)
-        if (dead || !prefs.moves) return
-        val t = Runnable { moveTick() }
-        moveTask = t
-        main.postDelayed(t, 5000L + rnd.nextInt(8000))
-    }
-
-    /** De tempos em tempos ela faz uma pose, uma dança ou passeia, se estiver quieta. */
-    private fun moveTick() {
-        if (dead) return
+    /** Medidas da tela e da figura (e da caixa de escrever, se estiver aberta). */
+    private fun ensureEnv(): Env {
+        val sz = screenSize()
+        val old = env
+        if (old != null && !envDirty && sz[0] == envW && sz[1] == envH) return old
+        envW = sz[0]
+        envH = sz[1]
         val f = figure
-        val calm = (state == State.WAKE || state == State.OFF) && !expanded && shown && walker == null
-        if (f != null && prefs.moves && calm && f.currentPose() == BodyView.Pose.IDLE) {
-            val bubbleOn = bubble?.visibility == View.VISIBLE
-            if (prefs.wander && !bubbleOn && rnd.nextInt(3) == 0) {
-                wander()
-            } else {
-                f.setPose(poses[rnd.nextInt(poses.size)], 2500L + rnd.nextInt(2500))
-            }
-        }
-        scheduleMove()
+        val fh = figH.toFloat()
+        val ne = Env(
+            sz[0].toFloat(), sz[1].toFloat(), dpf(28), (sz[1] - dp(56)).toFloat(),
+            figW.toFloat(), fh,
+            (f?.feetInsetFrac() ?: 0.02f) * fh,
+            (f?.pelvisFrac() ?: 0.42f) * fh,
+            resources.displayMetrics.density
+        )
+        env = ne
+        envDirty = false
+        if (inputAdded) syncInputRect()
+        return ne
     }
 
-    /** Anda até outro ponto da tela. */
-    private fun wander() {
-        val p = params ?: return
-        val r = root ?: return
-        val dm = resources.displayMetrics
-        val w = maxOf(r.width, dp(110))
-        val h = maxOf(r.height, dp(140))
-        val minX = dp(8)
-        val minY = dp(60)
-        val maxX = dm.widthPixels - w - dp(8)
-        val maxY = dm.heightPixels - h - dp(160)
-        if (maxX <= minX + dp(20) || maxY <= minY + dp(20)) return
-        val tx = minX + rnd.nextInt(maxX - minX)
-        val ty = minY + rnd.nextInt(maxY - minY)
-        val fx = p.x
-        val fy = p.y
-        val dist = Math.hypot((tx - fx).toDouble(), (ty - fy).toDouble()) / dm.density
-        val dur = (dist * 9.0).toLong().coerceIn(1500L, 6000L)
-        stopWalk()
-        figure?.setPose(BodyView.Pose.WALK)
-        val a = ValueAnimator.ofFloat(0f, 1f)
-        a.duration = dur
-        a.interpolator = LinearInterpolator()
-        a.addUpdateListener { va ->
-            val k = va.animatedValue as Float
-            p.x = (fx + (tx - fx) * k).toInt()
-            p.y = (fy + (ty - fy) * k).toInt()
+    private fun syncInputRect() {
+        val ip = inputParams ?: return
+        val e = env ?: return
+        e.setInput(ip.x.toFloat(), ip.y.toFloat(), (ip.x + inputW).toFloat(), (ip.y + inputH).toFloat())
+    }
+
+    private fun overridePose(): Move? = when (state) {
+        State.THINKING -> Move.THINK
+        State.COMMAND -> Move.LISTEN
+        State.SPEAKING -> Move.TALK
+        else -> null
+    }
+
+    private fun resetActs() {
+        acts.clear()
+        actIdx = 0
+    }
+
+    /** Faz um gesto agora, no lugar onde ela está, e depois volta à rotina. */
+    private fun queueGesture(m: Move, ms: Long) {
+        resetActs()
+        val a = Anchor.Abs(curX, curY)
+        acts.add(Choreo.Act(m, ms, a, a))
+        actStart = SystemClock.uptimeMillis()
+    }
+
+    private fun planNext(env: Env) {
+        resetActs()
+        val had = env.hasInput
+        if (!prefs.wander) env.hasInput = false
+        try {
+            acts.addAll(planner.plan(env, curX, curY, prefs.moves, prefs.wander))
+        } finally {
+            env.hasInput = had
+        }
+        if (acts.isEmpty()) {
+            val a = Anchor.Abs(curX, curY)
+            acts.add(Choreo.Act(Move.IDLE, 1500L, a, a))
+        }
+    }
+
+    private fun runChoreo(now: Long, env: Env) {
+        val f = figure ?: return
+        if (actIdx >= acts.size) {
+            planNext(env)
+            actStart = now
+        }
+        val a = acts[actIdx]
+        val k = (now - actStart).toFloat() / maxOf(1L, a.durMs).toFloat()
+        val px = curX
+        if (k >= 1f) {
+            a.pos(1f, env, tmp2)
+            curX = tmp2[0]
+            curY = tmp2[1]
+            actIdx++
+            actStart = now
+        } else {
+            if (f.currentPose() != a.move) f.setPose(a.move)
+            a.pos(k, env, tmp2)
+            curX = tmp2[0]
+            curY = tmp2[1]
+        }
+        f.kick((curX - px).coerceIn(-14f, 14f))
+    }
+
+    /** Se ela estava sentada na caixa e vai falar ou pensar, levanta antes. */
+    private fun settleForOverride(env: Env) {
+        if (actIdx < acts.size && acts[actIdx].move == Move.SIT && env.hasInput) {
+            curY = env.clampY(env.inT + env.feetInset - env.figH)
+        }
+    }
+
+    private fun tick() {
+        if (dead) return
+        val now = SystemClock.uptimeMillis()
+        val dtMs = now - lastTick
+        lastTick = now
+        val cr = charRoot
+        val visible = cr != null && cr.visibility == View.VISIBLE && charAttached
+        if (visible) {
+            val env = ensureEnv()
+            val ov = overridePose()
+            val f = figure
+            if (dragging || touching) {
+                actStart += dtMs
+            } else if (ov != null) {
+                if (acts.isNotEmpty()) {
+                    settleForOverride(env)
+                    resetActs()
+                }
+                if (f != null && f.currentPose() != ov) f.setPose(ov)
+            } else {
+                runChoreo(now, env)
+            }
+            applyCharPos()
+            positionBubble()
+        }
+        main.postDelayed(tickRunnable, if (visible) 33L else 250L)
+    }
+
+    private fun applyCharPos() {
+        val cr = charRoot ?: return
+        val cp = charParams ?: return
+        val xi = curX.toInt()
+        val yi = curY.toInt()
+        if (xi != cp.x || yi != cp.y) {
+            cp.x = xi
+            cp.y = yi
             try {
-                wm.updateViewLayout(r, p)
+                wm.updateViewLayout(cr, cp)
             } catch (e: Exception) {
                 // janela já removida
             }
         }
-        a.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                if (walker === a) {
-                    walker = null
-                    val f = figure
-                    if (f != null && f.currentPose() == BodyView.Pose.WALK) f.setPose(BodyView.Pose.IDLE)
-                }
+    }
+
+    // ---------- o balão de fala: fica em cima da cabeça dela ----------
+
+    private fun showBubble(text: String) {
+        val bt = bubbleText ?: return
+        val br = bubbleRoot ?: return
+        bt.text = text
+        bt.scrollTo(0, 0)
+        val charVisible = charRoot?.visibility == View.VISIBLE
+        br.visibility = if (charVisible) View.VISIBLE else View.GONE
+        bubbleDirty = true
+        positionBubble()
+    }
+
+    private fun hideBubbleNow() {
+        bubbleRoot?.visibility = View.GONE
+    }
+
+    private fun bubbleVisible(): Boolean = bubbleRoot?.visibility == View.VISIBLE
+
+    private fun positionBubble() {
+        val br = bubbleRoot ?: return
+        val bp = bubbleParams ?: return
+        val bt = bubbleText ?: return
+        if (!bubbleAttached || br.visibility != View.VISIBLE) return
+        val s = screenSize()
+        if (bubbleDirty) {
+            val maxW = minOf(dp(300), s[0] - dp(16))
+            bt.maxWidth = maxW
+            br.measure(
+                View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(s[1], View.MeasureSpec.AT_MOST)
+            )
+            bubbleW = br.measuredWidth
+            bubbleH = br.measuredHeight
+            bubbleDirty = false
+        }
+        val bw = bubbleW.toFloat()
+        val bh = bubbleH.toFloat()
+        val m = dpf(4)
+        val minTop = dpf(26)
+        val headTop = curY + figH * (figure?.headTopFrac() ?: 0.05f)
+        val cx = curX + figW / 2f
+        var x = (cx - bw / 2f).coerceIn(m, maxOf(m, s[0] - bw - m))
+        var y = headTop - bh
+        var above = true
+        if (y < minTop) {
+            // sem espaço em cima da cabeça: o balão vai para o lado dela
+            above = false
+            val right = curX + figW + dpf(2)
+            x = if (right + bw <= s[0] - m) right else curX - bw - dpf(2)
+            x = x.coerceIn(m, maxOf(m, s[0] - bw - m))
+            y = headTop
+        }
+        y = y.coerceIn(minTop, maxOf(minTop, s[1] - bh - m))
+        val tl = bubbleTail
+        if (tl != null) {
+            val want = if (above) View.VISIBLE else View.GONE
+            if (tl.visibility != want) {
+                tl.visibility = want
+                bubbleDirty = true
             }
-        })
-        walker = a
-        a.start()
-    }
-
-    private fun stopWalk() {
-        val w = walker ?: return
-        walker = null
-        w.cancel()
-        val f = figure
-        if (f != null && f.currentPose() == BodyView.Pose.WALK) f.setPose(BodyView.Pose.IDLE)
-    }
-
-    /** Pose que combina com o que ela está fazendo (ouvindo, pensando, falando). */
-    private fun refreshPose() {
-        val f = figure ?: return
-        val want: BodyView.Pose? = when (state) {
-            State.THINKING -> BodyView.Pose.THINK
-            State.COMMAND -> BodyView.Pose.LISTEN
-            State.SPEAKING -> BodyView.Pose.TALK
-            else -> null
+            if (above) {
+                val lim = maxOf(0f, bw / 2f - dpf(16))
+                tl.translationX = (cx - (x + bw / 2f)).coerceIn(-lim, lim)
+            }
         }
-        val cur = f.currentPose()
-        if (want != null) {
-            stopWalk()
-            if (cur != want) f.setPose(want)
-        } else if (cur == BodyView.Pose.THINK || cur == BodyView.Pose.LISTEN || cur == BodyView.Pose.TALK) {
-            f.setPose(BodyView.Pose.IDLE)
+        val xi = x.toInt()
+        val yi = y.toInt()
+        if (xi != bp.x || yi != bp.y) {
+            bp.x = xi
+            bp.y = yi
+            try {
+                wm.updateViewLayout(br, bp)
+            } catch (e: Exception) {
+                // janela já removida
+            }
         }
     }
 
-    private fun attachDrag(v: View) {
+    // ---------- tocar e arrastar ----------
+
+    private fun attachCharTouch(v: View) {
         val slop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
-        var startX = 0
-        var startY = 0
+        var startX = 0f
+        var startY = 0f
         var moved = false
         var longFired = false
         val longPress = Runnable {
@@ -473,52 +710,102 @@ class OverlayService : Service() {
             toggleWake()
         }
         v.setOnTouchListener { _, e ->
-            val p = params
-            if (p == null) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touching = true
+                    downX = e.rawX
+                    downY = e.rawY
+                    startX = curX
+                    startY = curY
+                    moved = false
+                    longFired = false
+                    main.postDelayed(longPress, 700)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+                    if (!moved && (Math.abs(dx) > slop || Math.abs(dy) > slop)) {
+                        moved = true
+                        dragging = true
+                        main.removeCallbacks(longPress)
+                        figure?.setPose(Move.FLY)
+                    }
+                    if (moved) {
+                        val env = ensureEnv()
+                        curX = env.clampX(startX + dx)
+                        curY = env.clampY(startY + dy)
+                        applyCharPos()
+                        positionBubble()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    main.removeCallbacks(longPress)
+                    touching = false
+                    if (moved) {
+                        dragging = false
+                        prefs.charX = curX.toInt()
+                        prefs.charY = curY.toInt()
+                        resetActs()
+                    } else if (!longFired) {
+                        setExpanded(!expanded)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    main.removeCallbacks(longPress)
+                    touching = false
+                    dragging = false
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun clampInput(x: Int, y: Int, s: IntArray): IntArray {
+        val minY = dp(28)
+        val maxY = maxOf(minY, (s[1] * 0.5f).toInt() - inputH)
+        return intArrayOf(x.coerceIn(0, maxOf(0, s[0] - inputW)), y.coerceIn(minY, maxY))
+    }
+
+    private fun attachInputDrag(v: View) {
+        var downX = 0f
+        var downY = 0f
+        var sx = 0
+        var sy = 0
+        v.setOnTouchListener { _, e ->
+            val ip = inputParams
+            if (ip == null) {
                 false
             } else {
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        stopWalk()
                         downX = e.rawX
                         downY = e.rawY
-                        startX = p.x
-                        startY = p.y
-                        moved = false
-                        longFired = false
-                        main.postDelayed(longPress, 700)
+                        sx = ip.x
+                        sy = ip.y
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val dx = e.rawX - downX
-                        val dy = e.rawY - downY
-                        if (!moved && (Math.abs(dx) > slop || Math.abs(dy) > slop)) {
-                            moved = true
-                            main.removeCallbacks(longPress)
+                        val p = clampInput(sx + (e.rawX - downX).toInt(), sy + (e.rawY - downY).toInt(), screenSize())
+                        ip.x = p[0]
+                        ip.y = p[1]
+                        val ir = inputRoot
+                        if (ir != null && inputAdded) {
+                            try {
+                                wm.updateViewLayout(ir, ip)
+                            } catch (ex: Exception) {
+                                // janela já removida
+                            }
                         }
-                        if (moved && !expanded) {
-                            p.x = startX - dx.toInt()
-                            p.y = startY - dy.toInt()
-                            clampPos(p)
-                            val r = root
-                            if (r != null) wm.updateViewLayout(r, p)
-                        }
+                        syncInputRect()
                         true
                     }
                     MotionEvent.ACTION_UP -> {
-                        main.removeCallbacks(longPress)
-                        if (moved) {
-                            if (!expanded) {
-                                prefs.posX = p.x
-                                prefs.posY = p.y
-                            }
-                        } else if (!longFired) {
-                            setExpanded(!expanded)
-                        }
-                        true
-                    }
-                    MotionEvent.ACTION_CANCEL -> {
-                        main.removeCallbacks(longPress)
+                        prefs.inputX = ip.x
+                        prefs.inputY = ip.y
                         true
                     }
                     else -> false
@@ -527,34 +814,63 @@ class OverlayService : Service() {
         }
     }
 
-    private fun clampPos(p: WindowManager.LayoutParams) {
-        val dm = resources.displayMetrics
-        p.x = p.x.coerceIn(0, maxOf(0, dm.widthPixels - dp(60)))
-        p.y = p.y.coerceIn(0, maxOf(0, dm.heightPixels - dp(100)))
+    private fun closeInput() {
+        if (!expanded) return
+        setExpanded(false)
+        if (prefs.moves) queueGesture(Move.WAVE, 2400L)
     }
 
     private fun setExpanded(on: Boolean) {
-        val p = params ?: return
-        val r = root ?: return
-        expanded = on
-        if (on) stopWalk()
-        inputRow?.visibility = if (on) View.VISIBLE else View.GONE
+        if (on == expanded) return
+        val ir = inputRoot ?: return
+        val ip = inputParams ?: return
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (on) {
-            // sobe a janela para o teclado não cobrir o campo de texto
-            savedY = p.y
-            p.y = maxOf(p.y, (resources.displayMetrics.heightPixels * 0.42f).toInt())
-            bubble?.maxHeight = dp(120)
-            p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-            wm.updateViewLayout(r, p)
+            val s = screenSize()
+            inputW = minOf(dp(300), s[0] - dp(16))
+            ip.width = inputW
+            ir.measure(
+                View.MeasureSpec.makeMeasureSpec(inputW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(s[1], View.MeasureSpec.AT_MOST)
+            )
+            inputH = ir.measuredHeight
+            var x = prefs.inputX
+            var y = prefs.inputY
+            if (x < 0 || y < 0) {
+                x = (s[0] - inputW) / 2
+                y = (s[1] * 0.30f).toInt()
+            }
+            val p = clampInput(x, y, s)
+            ip.x = p[0]
+            ip.y = p[1]
+            try {
+                wm.addView(ir, ip)
+            } catch (e: Exception) {
+                toast("Não consegui abrir a caixa de escrever.")
+                return
+            }
+            expanded = true
+            inputAdded = true
+            bubbleText?.maxHeight = dp(120)
+            bubbleDirty = true
+            envDirty = true
+            resetActs()
             input?.requestFocus()
             main.postDelayed({ imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT) }, 200)
         } else {
-            imm.hideSoftInputFromWindow(r.windowToken, 0)
-            p.y = savedY
-            bubble?.maxHeight = dp(230)
-            p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            wm.updateViewLayout(r, p)
+            imm.hideSoftInputFromWindow(ir.windowToken, 0)
+            try {
+                wm.removeView(ir)
+            } catch (e: Exception) {
+                // já removida
+            }
+            expanded = false
+            inputAdded = false
+            env?.clearInput()
+            bubbleText?.maxHeight = dp(200)
+            bubbleDirty = true
+            envDirty = true
+            resetActs()
             scheduleAutoHide()
         }
     }
@@ -562,8 +878,8 @@ class OverlayService : Service() {
     // ---------- aparecer e sumir ----------
 
     private fun setShown(on: Boolean) {
-        if (!on) stopWalk()
-        root?.visibility = if (on) View.VISIBLE else View.GONE
+        charRoot?.visibility = if (on) View.VISIBLE else View.GONE
+        if (!on) hideBubbleNow()
         shown = on
         refreshTile()
     }
@@ -574,7 +890,7 @@ class OverlayService : Service() {
         userHidden = false
         val wasHidden = !shown
         setShown(true)
-        if (wasHidden && prefs.moves) figure?.setPose(BodyView.Pose.WAVE, 1800L)
+        if (wasHidden && prefs.moves) queueGesture(Move.WAVE, 1800L)
     }
 
     /** Esconde o boneco na hora, sem esperar. Ela continua ouvindo "Ok Capri". */
@@ -582,7 +898,7 @@ class OverlayService : Service() {
         if (expanded) setExpanded(false)
         val h = hideTask
         if (h != null) main.removeCallbacks(h)
-        bubble?.visibility = View.GONE
+        hideBubbleNow()
         userHidden = true
         setShown(false)
     }
@@ -610,7 +926,7 @@ class OverlayService : Service() {
         if (!prefs.autoHide || dead) return
         val t = Runnable {
             if (!expanded && (state == State.WAKE || state == State.OFF)) {
-                bubble?.visibility = View.GONE
+                hideBubbleNow()
                 setShown(false)
             }
         }
@@ -627,17 +943,13 @@ class OverlayService : Service() {
     }
 
     private fun say(text: String, sticky: Boolean) {
-        val b = bubble ?: return
-        b.text = text
-        b.visibility = View.VISIBLE
-        b.scrollTo(0, 0)
+        if (bubbleText == null) return
+        showBubble(text)
         val old = hideBubble
         if (old != null) main.removeCallbacks(old)
         if (!sticky) {
             val h = Runnable {
-                if (!expanded && state != State.COMMAND && state != State.THINKING) {
-                    b.visibility = View.GONE
-                }
+                if (!expanded && state != State.COMMAND && state != State.THINKING) hideBubbleNow()
             }
             hideBubble = h
             main.postDelayed(h, 20000)
@@ -646,7 +958,6 @@ class OverlayService : Service() {
 
     private fun setDot(color: Int) {
         dot?.background = oval(color)
-        refreshPose()
     }
 
     // ---------- escuta ----------
@@ -1141,5 +1452,35 @@ class OverlayService : Service() {
         private val ON_TEAL = 0xFF04211C.toInt()
         private val HOT = 0xFFFF4F9D.toInt()
         private val AMBER = 0xFFFFC145.toInt()
+    }
+}
+
+/** A pontinha do balão de fala, que aponta para a cabeça dela. */
+class TailView(ctx: Context) : View(ctx) {
+    private val density = ctx.resources.displayMetrics.density
+    private val fillP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0xFF141229.toInt()
+    }
+    private val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f * density
+        color = 0xFF46F0D4.toInt()
+    }
+    private val edge = Path()
+    private val area = Path()
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        edge.reset()
+        edge.moveTo(0f, 0f)
+        edge.lineTo(w / 2f, h)
+        edge.lineTo(w, 0f)
+        area.reset()
+        area.addPath(edge)
+        area.close()
+        canvas.drawPath(area, fillP)
+        canvas.drawPath(edge, lineP)
     }
 }

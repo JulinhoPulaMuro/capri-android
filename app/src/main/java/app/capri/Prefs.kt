@@ -121,11 +121,62 @@ class Prefs(context: Context) {
             sp.edit().putFloat("faceW", value).apply()
         }
 
+    /** Onde fica o rosto sobre a foto do esqueleto (centro e largura, frações da foto). */
+    var rigFaceX: Float
+        get() = sp.getFloat("rigFaceX", 0.5f)
+        set(value) {
+            sp.edit().putFloat("rigFaceX", value).apply()
+        }
+
+    var rigFaceY: Float
+        get() = sp.getFloat("rigFaceY", 0.12f)
+        set(value) {
+            sp.edit().putFloat("rigFaceY", value).apply()
+        }
+
+    var rigFaceW: Float
+        get() = sp.getFloat("rigFaceW", 0.2f)
+        set(value) {
+            sp.edit().putFloat("rigFaceW", value).apply()
+        }
+
     /** Tamanho da figura na tela, 0.6 a 1.6. */
     var figureScale: Float
         get() = sp.getFloat("figureScale", 1.0f)
         set(value) {
             sp.edit().putFloat("figureScale", value).apply()
+        }
+
+    /** Juntas do esqueleto (36 números, frações da imagem). Vazio = posição padrão. */
+    var rigJoints: String
+        get() = sp.getString("rigJoints", "") ?: ""
+        set(value) {
+            sp.edit().putString("rigJoints", value).apply()
+        }
+
+    /** Onde ficam as janelas, em pixels do canto de cima e da esquerda da tela. -1 = ainda não escolhido. */
+    var charX: Int
+        get() = sp.getInt("charX", -1)
+        set(value) {
+            sp.edit().putInt("charX", value).apply()
+        }
+
+    var charY: Int
+        get() = sp.getInt("charY", -1)
+        set(value) {
+            sp.edit().putInt("charY", value).apply()
+        }
+
+    var inputX: Int
+        get() = sp.getInt("inputX", -1)
+        set(value) {
+            sp.edit().putInt("inputX", value).apply()
+        }
+
+    var inputY: Int
+        get() = sp.getInt("inputY", -1)
+        set(value) {
+            sp.edit().putInt("inputY", value).apply()
         }
 
     /** Faz poses e danças sozinha de vez em quando. */

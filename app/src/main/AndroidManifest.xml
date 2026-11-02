@@ -54,6 +54,11 @@
             android:exported="false" />
 
         <activity
+            android:name=".RigEditActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
+
+        <activity
             android:name=".StartActivity"
             android:exported="false"
             android:excludeFromRecents="true"
