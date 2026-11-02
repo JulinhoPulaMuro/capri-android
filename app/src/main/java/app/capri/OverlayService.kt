@@ -565,8 +565,8 @@ class OverlayService : Service() {
         val vx = curX - px
         f.kick(vx.coerceIn(-14f, 14f))
         // inclina um pouco para o lado em que ela vai (voando mais, andando menos)
-        val k = if (a.move == Move.FLY) 0.012f else 0.006f
-        f.lean = (vx * k).coerceIn(-0.22f, 0.22f)
+        val leanK = if (a.move == Move.FLY) 0.012f else 0.006f
+        f.lean = (vx * leanK).coerceIn(-0.22f, 0.22f)
     }
 
     /** Se ela estava sentada na caixa e vai falar ou pensar, levanta antes. */
