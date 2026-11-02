@@ -160,6 +160,10 @@ class BodyView(context: Context) : View(context) {
         }
     }
 
+    /** Inclinação do corpo para o lado em que ela anda ou voa, em radianos (positivo = para a direita). */
+    var lean = 0f
+    private var leanShown = 0f
+
     /** Empurrão no cabelo quando a janela se mexe: dx em pixels por quadro. */
     fun kick(dx: Float) {
         hairVel -= dx * 0.07f
@@ -369,6 +373,9 @@ class BodyView(context: Context) : View(context) {
         val k = k0 * k0 * (3f - 2f * k0)
         if (k >= 1f) mixPose.copyFrom(rigPose) else mixPose.mix(prevPose, rigPose, k)
         lastShown.copyFrom(mixPose)
+        // inclina para o lado em que ela anda, de forma suave
+        leanShown += (lean - leanShown) * 0.2f
+        mixPose.rot += leanShown
 
         // o cabelo é uma mola: balança atrás da cabeça
         val dt = if (lastDraw == 0L) 0.033f else min(0.05f, (now - lastDraw) / 1000f)

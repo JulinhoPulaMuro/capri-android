@@ -7,13 +7,12 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.Drawable
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
 /**
  * Desenha o corpo articulado: o cabelo (camada de trás, gira junto com a cabeça),
- * o corpo (imagem dobrada pelos ossos) e o rosto (preso ao pescoço).
+ * o corpo cortado em peças (uma por osso, sem esticar nada) e o rosto (preso ao pescoço).
  * As camadas vêm da mesma imagem, então dividem as mesmas coordenadas.
  */
 class RigRenderer {
@@ -21,9 +20,11 @@ class RigRenderer {
     private var hair: Bitmap? = null
     private var hairX = 0
     private var hairY = 0
-    private var body: Bitmap? = null
-    private var bodyX = 0
-    private var bodyY = 0
+
+    private val parts = arrayOfNulls<Bitmap>(Rig.BONES)
+    private val partX = IntArray(Rig.BONES)
+    private val partY = IntArray(Rig.BONES)
+    private var hasBody = false
 
     var srcW = 1
         private set
@@ -39,15 +40,6 @@ class RigRenderer {
     private var fx1 = 1f
     private var fy1 = 1f
     private var feetY = 0f
-
-    private var mw = 1
-    private var mh = 1
-    private var nv = 0
-    private var rx = FloatArray(0)
-    private var ry = FloatArray(0)
-    private var idx = IntArray(0)
-    private var wt = FloatArray(0)
-    private var out = FloatArray(0)
 
     private val bones = FloatArray(Rig.BONES * 6)
     private val headM = FloatArray(6)
@@ -76,11 +68,7 @@ class RigRenderer {
     }
 
     /** Caixa onde há pixels visíveis: x0, y0, x1, y1 (pixels). Null se a imagem está vazia. */
-    private fun alphaBox(b: Bitmap): IntArray? {
-        val w = b.width
-        val h = b.height
-        val px = IntArray(w * h)
-        b.getPixels(px, 0, w, 0, 0, w, h)
+    private fun alphaBox(px: IntArray, w: Int, h: Int): IntArray? {
         var x0 = w
         var y0 = h
         var x1 = -1
@@ -98,29 +86,55 @@ class RigRenderer {
         return if (x1 < 0) null else intArrayOf(x0, y0, x1 + 1, y1 + 1)
     }
 
-    private fun crop(b: Bitmap, box: IntArray): Bitmap =
-        Bitmap.createBitmap(b, box[0], box[1], box[2] - box[0], box[3] - box[1])
-
     /**
-     * Prepara as camadas. jointsFrac: 36 números (frações da imagem) ou null para a posição padrão.
+     * Prepara as camadas. jointsFrac: 36 números (frações da imagem) ou null para o palpite pela silhueta.
      * Devolve false se o corpo está vazio.
      */
     fun set(hairFull: Bitmap?, bodyFull: Bitmap, jointsFrac: FloatArray?): Boolean {
-        srcW = bodyFull.width
-        srcH = bodyFull.height
-        val bb = alphaBox(bodyFull) ?: return false
-        body = crop(bodyFull, bb)
-        bodyX = bb[0]
-        bodyY = bb[1]
+        val w = bodyFull.width
+        val h = bodyFull.height
+        srcW = w
+        srcH = h
+        val px = IntArray(w * h)
+        bodyFull.getPixels(px, 0, w, 0, 0, w, h)
+        val bb = alphaBox(px, w, h) ?: return false
+
+        val jf = jointsFrac ?: Rig.autoFit(px, w, h)
+        joints = FloatArray(Rig.JOINTS * 2)
+        for (i in 0 until Rig.JOINTS) {
+            joints[i * 2] = jf[i * 2] * w
+            joints[i * 2 + 1] = jf[i * 2 + 1] * h
+        }
+        feetY = bb[3].toFloat()
+
+        // corta o corpo: uma peça por osso
+        val radii = Rig.radiiFromMask(px, w, h, joints)
+        val owner = Rig.assignBones(px, w, h, joints, radii)
+        val cut = Rig.buildParts(px, w, h, joints, radii, owner)
+        for (b in 0 until Rig.BONES) {
+            val old = parts[b]
+            parts[b] = null
+            old?.recycle()
+            val p = cut[b] ?: continue
+            parts[b] = Bitmap.createBitmap(p.px, p.w, p.h, Bitmap.Config.ARGB_8888)
+            partX[b] = p.x
+            partY[b] = p.y
+        }
+        hasBody = true
+
         var ux0 = bb[0]
         var uy0 = bb[1]
         var ux1 = bb[2]
         var uy1 = bb[3]
         hair = null
         if (hairFull != null) {
-            val hb = alphaBox(hairFull)
+            val hw = hairFull.width
+            val hh = hairFull.height
+            val hpx = IntArray(hw * hh)
+            hairFull.getPixels(hpx, 0, hw, 0, 0, hw, hh)
+            val hb = alphaBox(hpx, hw, hh)
             if (hb != null) {
-                hair = crop(hairFull, hb)
+                hair = Bitmap.createBitmap(hairFull, hb[0], hb[1], hb[2] - hb[0], hb[3] - hb[1])
                 hairX = hb[0]
                 hairY = hb[1]
                 ux0 = min(ux0, hb[0]); uy0 = min(uy0, hb[1]); ux1 = max(ux1, hb[2]); uy1 = max(uy1, hb[3])
@@ -128,41 +142,10 @@ class RigRenderer {
         }
         val uw = (ux1 - ux0).toFloat()
         val uh = (uy1 - uy0).toFloat()
-        fx0 = ux0 - 0.14f * uw
-        fx1 = ux1 + 0.14f * uw
+        fx0 = ux0 - 0.28f * uw
+        fx1 = ux1 + 0.28f * uw
         fy0 = uy0 - 0.12f * uh
         fy1 = uy1 + 0.04f * uh
-
-        joints = FloatArray(Rig.JOINTS * 2)
-        val jf = jointsFrac ?: Rig.defaults(
-            bb[0].toFloat() / srcW, bb[1].toFloat() / srcH, bb[2].toFloat() / srcW, bb[3].toFloat() / srcH
-        )
-        for (i in 0 until Rig.JOINTS) {
-            joints[i * 2] = jf[i * 2] * srcW
-            joints[i * 2 + 1] = jf[i * 2 + 1] * srcH
-        }
-        feetY = bb[3].toFloat()
-
-        // malha do corpo
-        val bw = bb[2] - bb[0]
-        val bh = bb[3] - bb[1]
-        mw = (bw / 7).coerceIn(6, 64)
-        mh = (bh / 7).coerceIn(6, 80)
-        nv = (mw + 1) * (mh + 1)
-        rx = FloatArray(nv)
-        ry = FloatArray(nv)
-        idx = IntArray(nv * 3)
-        wt = FloatArray(nv * 3)
-        out = FloatArray(nv * 2)
-        var k = 0
-        for (j in 0..mh) {
-            for (i in 0..mw) {
-                rx[k] = bodyX + bw * i / mw.toFloat()
-                ry[k] = bodyY + bh * j / mh.toFloat()
-                k++
-            }
-        }
-        Rig.skin(rx, ry, nv, joints, hypot(srcW.toFloat(), srcH.toFloat()), idx, wt)
         return true
     }
 
@@ -175,7 +158,7 @@ class RigRenderer {
         d: Drawable?, hw: Int, hh: Int, cutout: Boolean,
         faceX: Float, faceY: Float, faceW: Float, rect: RectF, clip: Path
     ) {
-        val b = body ?: return
+        if (!hasBody) return
         val fw = fx1 - fx0
         val fh = fy1 - fy0
         val sc = min(w / fw, h / fh)
@@ -191,17 +174,22 @@ class RigRenderer {
         val hr = hair
         if (hr != null) {
             canvas.save()
-            applyMatrix(canvas, hairM)
+            applyMatrix(canvas, hairM, 0)
             canvas.drawBitmap(hr, hairX.toFloat(), hairY.toFloat(), paint)
             canvas.restore()
         }
 
-        Rig.deform(rx, ry, nv, idx, wt, bones, out)
-        canvas.drawBitmapMesh(b, mw, mh, out, 0, null, 0, paint)
+        for (b in Rig.DRAW_ORDER) {
+            val bm = parts[b] ?: continue
+            canvas.save()
+            applyMatrix(canvas, bones, b * 6)
+            canvas.drawBitmap(bm, partX[b].toFloat(), partY[b].toFloat(), paint)
+            canvas.restore()
+        }
 
         if (d != null) {
             canvas.save()
-            applyMatrix(canvas, headM)
+            applyMatrix(canvas, headM, 0)
             FaceDraw.draw(
                 canvas, d, hw, hh, cutout,
                 faceX * srcW, faceY * srcH, faceW * srcW, rect, clip
@@ -211,9 +199,9 @@ class RigRenderer {
         canvas.restore()
     }
 
-    private fun applyMatrix(canvas: Canvas, m: FloatArray) {
-        m9[0] = m[0]; m9[1] = m[1]; m9[2] = m[2]
-        m9[3] = m[3]; m9[4] = m[4]; m9[5] = m[5]
+    private fun applyMatrix(canvas: Canvas, m: FloatArray, o: Int) {
+        m9[0] = m[o]; m9[1] = m[o + 1]; m9[2] = m[o + 2]
+        m9[3] = m[o + 3]; m9[4] = m[o + 4]; m9[5] = m[o + 5]
         m9[6] = 0f; m9[7] = 0f; m9[8] = 1f
         matrix.setValues(m9)
         canvas.concat(matrix)

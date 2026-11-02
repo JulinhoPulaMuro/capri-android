@@ -124,6 +124,15 @@ object Rig {
         out[3] = 0f; out[4] = sy; out[5] = py - sy * py
     }
 
+    /** Estica ou encurta k vezes ao longo da direção (ux, uy), mantendo o ponto (px, py) parado. */
+    fun scaleAlong(ux: Float, uy: Float, k: Float, px: Float, py: Float, out: FloatArray) {
+        val a = 1f + (k - 1f) * ux * ux
+        val b = (k - 1f) * ux * uy
+        val d = 1f + (k - 1f) * uy * uy
+        out[0] = a; out[1] = b; out[2] = px - (a * px + b * py)
+        out[3] = b; out[4] = d; out[5] = py - (b * px + d * py)
+    }
+
     fun translate(dx: Float, dy: Float, out: FloatArray) {
         out[0] = 1f; out[1] = 0f; out[2] = dx
         out[3] = 0f; out[4] = 1f; out[5] = dy
@@ -181,19 +190,41 @@ object Rig {
             val knee = if (s == 0) KNEE_L else KNEE_R
             val ank = if (s == 0) ANK_L else ANK_R
             val bt = if (s == 0) B_TH_L else B_TH_R
-            rotAbout(sgn[s] * p.th[s], jx(hip), jy(hip), t1)
+            val hx = jx(hip)
+            val hy = jy(hip)
+            val kx = jx(knee)
+            val ky = jy(knee)
+            val ax = jx(ank)
+            val ay = jy(ank)
+
+            // coxa: gira no quadril e pode encurtar (a perna vem para a frente, vista de frente)
+            rotAbout(sgn[s] * p.th[s], hx, hy, t1)
             mul(root, t1, chain)
-            System.arraycopy(chain, 0, bones, bt * 6, 6)
-            rotAbout(sgn[s] * p.sh[s], jx(knee), jy(knee), t1)
+            val tl = max(1f, hypot(kx - hx, ky - hy))
+            scaleAlong((kx - hx) / tl, (ky - hy) / tl, p.thS[s], hx, hy, t2)
+            mul(chain, t2, chain2)
+            System.arraycopy(chain2, 0, bones, bt * 6, 6)
+
+            // o joelho acompanha a coxa encurtada
+            translate(-(1f - p.thS[s]) * (kx - hx), -(1f - p.thS[s]) * (ky - hy), t2)
+            mul(chain, t2, chain)
+            rotAbout(sgn[s] * p.sh[s], kx, ky, t1)
             mul(chain, t1, chain2)
-            System.arraycopy(chain2, 0, bones, (bt + 1) * 6, 6)
-            rotAbout(sgn[s] * p.ft[s], jx(ank), jy(ank), t1)
+            val sl = max(1f, hypot(ax - kx, ay - ky))
+            scaleAlong((ax - kx) / sl, (ay - ky) / sl, p.shS[s], kx, ky, t2)
+            mul(chain2, t2, chain)
+            System.arraycopy(chain, 0, bones, (bt + 1) * 6, 6)
+
+            // o tornozelo acompanha a canela encurtada
+            translate(-(1f - p.shS[s]) * (ax - kx), -(1f - p.shS[s]) * (ay - ky), t2)
+            mul(chain2, t2, chain2)
+            rotAbout(sgn[s] * p.ft[s], ax, ay, t1)
             mul(chain2, t1, chain)
             System.arraycopy(chain, 0, bones, (bt + 2) * 6, 6)
         }
     }
 
-    // ---------- pesos: quanto cada osso arrasta cada ponto da imagem ----------
+    // ---------- peças: cada osso leva a sua parte da imagem, sem esticar ----------
 
     private fun segDist(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
         val vx = bx - ax
@@ -204,70 +235,409 @@ object Rig {
         return hypot(px - (ax + t * vx), py - (ay + t * vy))
     }
 
-    /** Raio de influência de cada osso, em pixels. Dentro dele o osso manda sozinho. */
-    fun radii(j: FloatArray, diag: Float): FloatArray {
+    /** O osso de onde cada osso se pendura (o torso não tem pai). */
+    val PARENT = intArrayOf(-1, B_TORSO, B_UA_L, B_FA_L, B_TORSO, B_UA_R, B_FA_R, B_TORSO, B_TH_L, B_SH_L, B_TORSO, B_TH_R, B_SH_R)
+
+    /** Ordem de desenho: de trás para a frente (pernas, torso, braços). */
+    val DRAW_ORDER = intArrayOf(
+        B_TH_L, B_SH_L, B_FT_L, B_TH_R, B_SH_R, B_FT_R, B_TORSO,
+        B_UA_L, B_FA_L, B_HA_L, B_UA_R, B_FA_R, B_HA_R
+    )
+
+    private fun alphaAt(a: IntArray, w: Int, h: Int, x: Int, y: Int): Int =
+        if (x < 0 || y < 0 || x >= w || y >= h) 0 else (a[y * w + x] ushr 24)
+
+    /**
+     * Espessura de cada osso medida na própria imagem: meia largura do corpo ao redor do osso.
+     * px: pixels ARGB da imagem; j: juntas em pixels.
+     */
+    fun radiiFromMask(px: IntArray, w: Int, h: Int, j: FloatArray): FloatArray {
+        var y0 = h
+        var y1 = 0
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                if ((px[y * w + x] ushr 24) > 10) {
+                    if (y < y0) y0 = y
+                    if (y > y1) y1 = y
+                }
+            }
+        }
+        val bh = max(20f, (y1 - y0).toFloat())
         fun d(a: Int, b: Int) = hypot(j[a * 2] - j[b * 2], j[a * 2 + 1] - j[b * 2 + 1])
         val shoulders = d(SHO_L, SHO_R)
-        val hips = d(HIP_L, HIP_R)
-        val minR = 0.004f * diag
         val r = FloatArray(BONES)
-        r[B_TORSO] = max(minR, 0.42f * shoulders)
-        for (b in 1 until BONES) {
-            val len = d(BONE_A[b], BONE_B[b])
-            r[b] = max(minR, min(0.12f * len + 0.02f * diag, 0.09f * diag))
+        for (b in 0 until BONES) {
+            val ax = j[BONE_A[b] * 2]
+            val ay = j[BONE_A[b] * 2 + 1]
+            val bx = j[BONE_B[b] * 2]
+            val by = j[BONE_B[b] * 2 + 1]
+            val len = hypot(bx - ax, by - ay)
+            val minR = 0.012f * bh
+            if (len < 1f) {
+                r[b] = minR * 2f
+                continue
+            }
+            val nx = -(by - ay) / len
+            val ny = (bx - ax) / len
+            val maxD = if (b == B_TORSO) 0.5f * shoulders + 0.05f * bh else min(0.5f * len, 0.2f * bh)
+            val vals = ArrayList<Float>()
+            for (k in 0..10) {
+                val t = 0.1f + 0.08f * k
+                val cx = ax + (bx - ax) * t
+                val cy = ay + (by - ay) * t
+                if (alphaAt(px, w, h, cx.toInt(), cy.toInt()) <= 10) continue
+                var pos = 0f
+                while (pos < maxD && alphaAt(px, w, h, (cx + nx * pos).toInt(), (cy + ny * pos).toInt()) > 10) pos += 0.5f
+                var neg = 0f
+                while (neg < maxD && alphaAt(px, w, h, (cx - nx * neg).toInt(), (cy - ny * neg).toInt()) > 10) neg += 0.5f
+                vals.add((pos + neg) / 2f)
+            }
+            vals.sort()
+            var rr = if (vals.isEmpty()) 0.05f * bh else vals[vals.size / 2]
+            val hi = if (b == B_TORSO) 0.65f * shoulders else 0.4f * len
+            rr = min(rr, max(minR, hi))
+            r[b] = max(rr, minR)
         }
-        for (b in intArrayOf(B_TH_L, B_TH_R)) r[b] = max(r[b], 0.4f * hips)
         return r
     }
 
-    /**
-     * Para cada ponto (xs, ys) da imagem em repouso, escolhe até 3 ossos e seus pesos (somam 1).
-     * idx e w têm 3 posições por ponto.
-     */
-    fun skin(xs: FloatArray, ys: FloatArray, n: Int, j: FloatArray, diag: Float, idx: IntArray, w: FloatArray) {
-        val r = radii(j, diag)
-        val eps = (0.012f * diag) * (0.012f * diag)
-        val wt = FloatArray(BONES)
-        for (i in 0 until n) {
-            for (b in 0 until BONES) {
-                val a = BONE_A[b]
-                val c = BONE_B[b]
-                val d = max(0f, segDist(xs[i], ys[i], j[a * 2], j[a * 2 + 1], j[c * 2], j[c * 2 + 1]) - r[b])
-                val q = d * d + eps
-                wt[b] = 1f / (q * q * q)
+    /** Qual osso leva cada ponto: o que está mais "dentro" dele, medido na espessura do próprio osso. -1 = vazio. */
+    fun assignBones(px: IntArray, w: Int, h: Int, j: FloatArray, r: FloatArray): ByteArray {
+        val out = ByteArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val i = y * w + x
+                if ((px[i] ushr 24) <= 10) {
+                    out[i] = -1
+                    continue
+                }
+                var best = 0
+                var bv = Float.MAX_VALUE
+                for (b in 0 until BONES) {
+                    val a = BONE_A[b]
+                    val c = BONE_B[b]
+                    val d = segDist(x + 0.5f, y + 0.5f, j[a * 2], j[a * 2 + 1], j[c * 2], j[c * 2 + 1]) / r[b]
+                    if (d < bv) {
+                        bv = d
+                        best = b
+                    }
+                }
+                out[i] = best.toByte()
             }
-            var b0 = 0
-            var b1 = -1
-            var b2 = -1
-            for (b in 1 until BONES) if (wt[b] > wt[b0]) b0 = b
-            for (b in 0 until BONES) if (b != b0 && (b1 < 0 || wt[b] > wt[b1])) b1 = b
-            for (b in 0 until BONES) if (b != b0 && b != b1 && (b2 < 0 || wt[b] > wt[b2])) b2 = b
-            val sum = wt[b0] + wt[b1] + wt[b2]
-            idx[i * 3] = b0
-            idx[i * 3 + 1] = b1
-            idx[i * 3 + 2] = b2
-            w[i * 3] = wt[b0] / sum
-            w[i * 3 + 1] = wt[b1] / sum
-            w[i * 3 + 2] = wt[b2] / sum
         }
+        return out
     }
 
-    /** Move os pontos de acordo com as matrizes dos ossos. out: x e y intercalados. */
-    fun deform(xs: FloatArray, ys: FloatArray, n: Int, idx: IntArray, w: FloatArray, bones: FloatArray, out: FloatArray) {
-        for (i in 0 until n) {
-            var ox = 0f
-            var oy = 0f
-            val x = xs[i]
-            val y = ys[i]
-            for (k in 0..2) {
-                val o = idx[i * 3 + k] * 6
-                val wk = w[i * 3 + k]
-                ox += wk * (bones[o] * x + bones[o + 1] * y + bones[o + 2])
-                oy += wk * (bones[o + 3] * x + bones[o + 4] * y + bones[o + 5])
+    /** Uma parte da imagem: canto (x, y), tamanho e pixels ARGB. */
+    class Part(val x: Int, val y: Int, val w: Int, val h: Int, val px: IntArray)
+
+    /**
+     * Corta a imagem em uma parte por osso. Cada parte leva também uma "tampa" macia dos pontos do osso
+     * pai perto da junta, para não abrir fresta quando o membro dobra.
+     * Devolve BONES partes (null quando o osso não leva nenhum ponto).
+     */
+    fun buildParts(px: IntArray, w: Int, h: Int, j: FloatArray, r: FloatArray, owner: ByteArray): Array<Part?> {
+        val pad = 2
+        val minX = IntArray(BONES) { w }
+        val minY = IntArray(BONES) { h }
+        val maxX = IntArray(BONES) { -1 }
+        val maxY = IntArray(BONES) { -1 }
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val o = owner[y * w + x].toInt()
+                if (o < 0) continue
+                if (x < minX[o]) minX[o] = x
+                if (x > maxX[o]) maxX[o] = x
+                if (y < minY[o]) minY[o] = y
+                if (y > maxY[o]) maxY[o] = y
             }
-            out[i * 2] = ox
-            out[i * 2 + 1] = oy
         }
+        val out = arrayOfNulls<Part>(BONES)
+        for (b in 0 until BONES) {
+            var x0 = minX[b]
+            var y0 = minY[b]
+            var x1 = maxX[b]
+            var y1 = maxY[b]
+            val par = PARENT[b]
+            val hx = j[BONE_A[b] * 2]
+            val hy = j[BONE_A[b] * 2 + 1]
+            val cap = max(3f, 1.25f * r[b])
+            if (par >= 0) {
+                // a tampa pode estender a caixa da parte
+                x0 = min(x0, (hx - cap).toInt() - 1)
+                y0 = min(y0, (hy - cap).toInt() - 1)
+                x1 = max(x1, (hx + cap).toInt() + 1)
+                y1 = max(y1, (hy + cap).toInt() + 1)
+            }
+            if (maxX[b] < 0 && par < 0) continue
+            x0 = max(0, x0 - pad)
+            y0 = max(0, y0 - pad)
+            x1 = min(w - 1, x1 + pad)
+            y1 = min(h - 1, y1 + pad)
+            if (x1 < x0 || y1 < y0) continue
+            val pw = x1 - x0 + 1
+            val ph = y1 - y0 + 1
+            val arr = IntArray(pw * ph)
+            var any = false
+            for (y in y0..y1) {
+                for (x in x0..x1) {
+                    val i = y * w + x
+                    val o = owner[i].toInt()
+                    if (o < 0) continue
+                    var c = 0
+                    if (o == b) {
+                        c = px[i]
+                    } else if (o == par) {
+                        val d = hypot(x + 0.5f - hx, y + 0.5f - hy)
+                        if (d < cap) {
+                            // macia: inteira no miolo, some perto da borda da tampa
+                            val k = if (d < 0.6f * cap) 1f else (cap - d) / (0.4f * cap)
+                            val a = ((px[i] ushr 24) * k).toInt().coerceIn(0, 255)
+                            c = (a shl 24) or (px[i] and 0xFFFFFF)
+                        }
+                    }
+                    if (c != 0) {
+                        arr[(y - y0) * pw + (x - x0)] = c
+                        any = true
+                    }
+                }
+            }
+            if (any) out[b] = Part(x0, y0, pw, ph, arr)
+        }
+        return out
+    }
+
+    // ---------- palpite das juntas a partir da silhueta ----------
+
+    /**
+     * Adivinha onde ficam as 18 juntas olhando só a silhueta do corpo (sem cabeça): pernas separadas,
+     * pescoço no topo, braços ao lado. px: pixels ARGB. Devolve frações da imagem (36 números).
+     * Quando não acha algo, usa a posição padrão. O usuário ajusta no editor.
+     */
+    fun autoFit(px: IntArray, w: Int, h: Int): FloatArray {
+        var x0 = w
+        var y0 = h
+        var x1 = -1
+        var y1 = -1
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                if ((px[y * w + x] ushr 24) > 16) {
+                    if (x < x0) x0 = x
+                    if (x > x1) x1 = x
+                    if (y < y0) y0 = y
+                    if (y > y1) y1 = y
+                }
+            }
+        }
+        if (x1 < 0) return defaults(0.25f, 0.1f, 0.75f, 0.95f)
+        x1 += 1
+        y1 += 1
+        val bw = (x1 - x0).toFloat()
+        val bh = (y1 - y0).toFloat()
+        val def = defaults(x0.toFloat() / w, y0.toFloat() / h, x1.toFloat() / w, y1.toFloat() / h)
+        val j = FloatArray(JOINTS * 2)
+        for (i in 0 until JOINTS) {
+            j[i * 2] = def[i * 2] * w
+            j[i * 2 + 1] = def[i * 2 + 1] * h
+        }
+        fun put(i: Int, x: Float, y: Float) {
+            j[i * 2] = x
+            j[i * 2 + 1] = y
+        }
+
+        // trechos opacos de uma linha entre xa e xb (juntando buracos de até 2 pontos)
+        fun runs(y: Int, xa: Int, xb: Int, minW: Int): List<IntArray> {
+            val out = ArrayList<IntArray>()
+            if (y < 0 || y >= h) return out
+            var start = -1
+            var last = -10
+            for (x in max(0, xa)..min(w - 1, xb)) {
+                if ((px[y * w + x] ushr 24) > 16) {
+                    if (start < 0) start = x
+                    last = x
+                } else if (start >= 0 && x - last > 2) {
+                    if (last - start + 1 >= minW) out.add(intArrayOf(start, last))
+                    start = -1
+                }
+            }
+            if (start >= 0 && last - start + 1 >= minW) out.add(intArrayOf(start, last))
+            return out
+        }
+        val minRun = max(2, (0.012f * bw).toInt())
+        val midX = (x0 + x1) / 2
+
+        // ---- pernas: de baixo para cima, até onde elas se juntam (a virilha)
+        var crotch = -1
+        run {
+            var y = y1 - 1 - (0.04f * bh).toInt()
+            val top = y0 + (0.35f * bh).toInt()
+            while (y > top) {
+                val rr = runs(y, x0, x1, minRun)
+                if (rr.size < 2) {
+                    crotch = y
+                    break
+                }
+                y--
+            }
+        }
+        var haveLegs = crotch > 0 && crotch < y1 - 0.15f * bh
+        if (!haveLegs) crotch = (y0 + 0.5f * bh).toInt()
+        val hipY = crotch - 0.03f * bh
+        val pelvisY = hipY - 0.03f * bh
+
+        // centro de cada perna numa faixa de linhas
+        fun legCenter(ya: Int, yb: Int, left: Boolean): Float {
+            var sum = 0f
+            var n = 0
+            for (y in ya..yb) {
+                val rr = runs(y, x0, x1, minRun)
+                if (rr.size < 2) continue
+                val pick = if (left) rr[0] else rr[rr.size - 1]
+                sum += (pick[0] + pick[1] + 1) / 2f
+                n++
+            }
+            return if (n == 0) Float.NaN else sum / n
+        }
+        if (haveLegs) {
+            val kneeRow = (hipY + 0.5f * (y1 - 0.06f * bh - hipY)).toInt()
+            val ankRow = (y1 - 0.10f * bh).toInt()
+            val hipRow = min(y1 - 2, crotch + (0.03f * bh).toInt())
+            val lh = legCenter(hipRow, hipRow + 2, true)
+            val rh = legCenter(hipRow, hipRow + 2, false)
+            val lk = legCenter(kneeRow - 1, kneeRow + 1, true)
+            val rk = legCenter(kneeRow - 1, kneeRow + 1, false)
+            val la = legCenter(ankRow - 1, ankRow + 1, true)
+            val ra = legCenter(ankRow - 1, ankRow + 1, false)
+            if (!lh.isNaN() && !rh.isNaN() && !lk.isNaN() && !rk.isNaN() && !la.isNaN() && !ra.isNaN()) {
+                // ponta do pé: ponto mais baixo de cada metade
+                val splitX = ((la + ra) / 2f).toInt()
+                var toeLY = -1
+                var toeRY = -1
+                for (y in y1 - 1 downTo y0) {
+                    var l = false
+                    var r = false
+                    for (x in x0 until x1) {
+                        if ((px[y * w + x] ushr 24) > 16) {
+                            if (x < splitX) l = true else r = true
+                        }
+                    }
+                    if (l && toeLY < 0) toeLY = y
+                    if (r && toeRY < 0) toeRY = y
+                    if (toeLY >= 0 && toeRY >= 0) break
+                }
+                if (toeLY < 0) toeLY = y1 - 1
+                if (toeRY < 0) toeRY = y1 - 1
+                fun toeX(left: Boolean, ty: Int): Float {
+                    var sum = 0f
+                    var n = 0
+                    for (y in max(y0, ty - 2)..ty) {
+                        for (x in x0 until x1) {
+                            if ((px[y * w + x] ushr 24) > 16 && (x < splitX) == left) {
+                                sum += x + 0.5f
+                                n++
+                            }
+                        }
+                    }
+                    return if (n == 0) (if (left) la else ra) else sum / n
+                }
+                val tl = toeX(true, toeLY)
+                val tr = toeX(false, toeRY)
+                val hy = hipY
+                put(HIP_L, lh, hy)
+                put(HIP_R, rh, hy)
+                put(ANK_L, la, toeLY - 0.05f * bh)
+                put(ANK_R, ra, toeRY - 0.05f * bh)
+                put(TOE_L, tl, toeLY.toFloat())
+                put(TOE_R, tr, toeRY.toFloat())
+                put(KNEE_L, lk, hy + 0.5f * (toeLY - 0.05f * bh - hy))
+                put(KNEE_R, rk, hy + 0.5f * (toeRY - 0.05f * bh - hy))
+            } else {
+                haveLegs = false
+            }
+        }
+        if (!haveLegs) {
+            // pernas juntas: usa o padrão, mas com a virilha onde achamos
+            put(HIP_L, j[HIP_L * 2], hipY)
+            put(HIP_R, j[HIP_R * 2], hipY)
+        }
+
+        // ---- pescoço: topo do corpo, no trecho do meio
+        val topRows = max(2, (0.03f * bh).toInt())
+        var nsum = 0f
+        var nn = 0
+        for (y in y0 until min(y1, y0 + topRows)) {
+            val rr = runs(y, x0, x1, minRun)
+            if (rr.isEmpty()) continue
+            var best = rr[0]
+            var bd = Float.MAX_VALUE
+            for (q in rr) {
+                val d = Math.abs((q[0] + q[1]) / 2f - midX)
+                if (d < bd) {
+                    bd = d
+                    best = q
+                }
+            }
+            nsum += (best[0] + best[1] + 1) / 2f
+            nn++
+        }
+        val neckX = if (nn > 0) nsum / nn else midX.toFloat()
+        put(NECK, neckX, y0 + 0.02f * bh)
+        put(PELVIS, (j[HIP_L * 2] + j[HIP_R * 2]) / 2f, pelvisY)
+
+        // ---- braços: a ponta de cada um é o ponto mais baixo nas colunas de fora, acima da virilha
+        val shY = y0 + 0.08f * bh
+        for (side in 0..1) {
+            val left = side == 0
+            val sho = if (left) SHO_L else SHO_R
+            val elb = if (left) ELB_L else ELB_R
+            val wri = if (left) WRI_L else WRI_R
+            val han = if (left) HAND_L else HAND_R
+            val colA = if (left) x0 else (x1 - (0.30f * bw).toInt())
+            val colB = if (left) (x0 + (0.30f * bw).toInt()) else x1 - 1
+            var tipY = -1
+            var tipX = 0f
+            val yTop = (y0 + 0.12f * bh).toInt()
+            val yBot = min(y1 - 1, if (haveLegs) crotch else (y0 + 0.62f * bh).toInt())
+            for (y in yBot downTo yTop) {
+                var sum = 0f
+                var n = 0
+                for (x in colA..colB) {
+                    if ((px[y * w + x] ushr 24) > 16) {
+                        sum += x + 0.5f
+                        n++
+                    }
+                }
+                if (n > 0) {
+                    tipY = y
+                    tipX = sum / n
+                    break
+                }
+            }
+            if (tipY < 0 || tipY < y0 + 0.30f * bh) continue
+            // o centro do braço em cada altura: o trecho que fica na coluna de fora
+            fun armCenter(y: Int, fallback: Float): Float {
+                val rr = runs(y, colA, colB, 1)
+                if (rr.isEmpty()) return fallback
+                val pick = if (left) rr[0] else rr[rr.size - 1]
+                return (pick[0] + pick[1] + 1) / 2f
+            }
+            val sy = shY
+            val sxx = armCenter(sy.toInt(), if (left) x0 + 0.12f * bw else x1 - 0.12f * bw)
+            put(sho, sxx, sy)
+            val ey = sy + 0.45f * (tipY - sy)
+            val wy = sy + 0.85f * (tipY - sy)
+            val lerpX = { t: Float -> sxx + (tipX - sxx) * t }
+            put(elb, armCenter(ey.toInt(), lerpX(0.45f)), ey)
+            put(wri, armCenter(wy.toInt(), lerpX(0.85f)), wy)
+            put(han, tipX, tipY.toFloat())
+        }
+
+        val o = FloatArray(JOINTS * 2)
+        for (i in 0 until JOINTS) {
+            o[i * 2] = (j[i * 2] / w).coerceIn(0f, 1f)
+            o[i * 2 + 1] = (j[i * 2 + 1] / h).coerceIn(0f, 1f)
+        }
+        return o
     }
 }
 
@@ -287,12 +657,18 @@ class RigPose {
     val sh = FloatArray(2)
     val ft = FloatArray(2)
 
+    /** Quanto a coxa e a canela aparecem encurtadas (1 = inteiras). Serve para levantar o pé e sentar. */
+    val thS = floatArrayOf(1f, 1f)
+    val shS = floatArrayOf(1f, 1f)
+
     fun reset() {
         dx = 0f; dy = 0f; rot = 0f; sx = 1f; sy = 1f; tor = 0f; head = 0f
         for (a in arrayOf(ua, fa, ha, th, sh, ft)) {
             a[0] = 0f
             a[1] = 0f
         }
+        thS[0] = 1f; thS[1] = 1f
+        shS[0] = 1f; shS[1] = 1f
     }
 
     fun copyFrom(o: RigPose) {
@@ -300,6 +676,7 @@ class RigPose {
         for (k in 0..1) {
             ua[k] = o.ua[k]; fa[k] = o.fa[k]; ha[k] = o.ha[k]
             th[k] = o.th[k]; sh[k] = o.sh[k]; ft[k] = o.ft[k]
+            thS[k] = o.thS[k]; shS[k] = o.shS[k]
         }
     }
 
@@ -311,6 +688,7 @@ class RigPose {
         for (i in 0..1) {
             ua[i] = l(a.ua[i], b.ua[i]); fa[i] = l(a.fa[i], b.fa[i]); ha[i] = l(a.ha[i], b.ha[i])
             th[i] = l(a.th[i], b.th[i]); sh[i] = l(a.sh[i], b.sh[i]); ft[i] = l(a.ft[i], b.ft[i])
+            thS[i] = l(a.thS[i], b.thS[i]); shS[i] = l(a.shS[i], b.shS[i])
         }
     }
 }

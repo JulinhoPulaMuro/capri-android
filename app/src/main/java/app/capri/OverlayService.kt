@@ -562,7 +562,11 @@ class OverlayService : Service() {
             curX = tmp2[0]
             curY = tmp2[1]
         }
-        f.kick((curX - px).coerceIn(-14f, 14f))
+        val vx = curX - px
+        f.kick(vx.coerceIn(-14f, 14f))
+        // inclina um pouco para o lado em que ela vai (voando mais, andando menos)
+        val k = if (a.move == Move.FLY) 0.012f else 0.006f
+        f.lean = (vx * k).coerceIn(-0.22f, 0.22f)
     }
 
     /** Se ela estava sentada na caixa e vai falar ou pensar, levanta antes. */
@@ -584,6 +588,7 @@ class OverlayService : Service() {
             val ov = overridePose()
             val f = figure
             if (dragging || touching) {
+                f?.lean = 0f
                 actStart += dtMs
             } else if (ov != null) {
                 if (acts.isNotEmpty()) {
@@ -591,6 +596,7 @@ class OverlayService : Service() {
                     resetActs()
                 }
                 if (f != null && f.currentPose() != ov) f.setPose(ov)
+                f?.lean = 0f
             } else {
                 runChoreo(now, env)
             }
@@ -814,6 +820,38 @@ class OverlayService : Service() {
         }
     }
 
+    /** A figura e o balão ficam por cima da caixa de escrever: assim ela senta e anda na frente dela. */
+    private fun bringFigureToFront() {
+        val cr = charRoot
+        val cp = charParams
+        if (cr != null && cp != null && charAttached) {
+            try {
+                wm.removeViewImmediate(cr)
+                wm.addView(cr, cp)
+            } catch (e: Exception) {
+                try {
+                    wm.addView(cr, cp)
+                } catch (e2: Exception) {
+                    charAttached = false
+                }
+            }
+        }
+        val br = bubbleRoot
+        val bp = bubbleParams
+        if (br != null && bp != null && bubbleAttached) {
+            try {
+                wm.removeViewImmediate(br)
+                wm.addView(br, bp)
+            } catch (e: Exception) {
+                try {
+                    wm.addView(br, bp)
+                } catch (e2: Exception) {
+                    bubbleAttached = false
+                }
+            }
+        }
+    }
+
     private fun closeInput() {
         if (!expanded) return
         setExpanded(false)
@@ -851,6 +889,7 @@ class OverlayService : Service() {
             }
             expanded = true
             inputAdded = true
+            bringFigureToFront()
             bubbleText?.maxHeight = dp(120)
             bubbleDirty = true
             envDirty = true
