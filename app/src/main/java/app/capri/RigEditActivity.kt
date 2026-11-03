@@ -57,7 +57,8 @@ class RigEditActivity : Activity() {
         Pair(Move.IDLE, "Parada"), Pair(Move.WALK, "Andando"), Pair(Move.WAVE, "Tchau"),
         Pair(Move.DANCE, "Dança 1"), Pair(Move.DANCE2, "Dança 2"), Pair(Move.HOP, "Pulo"),
         Pair(Move.CHEER, "Comemorando"), Pair(Move.SIT, "Sentada"), Pair(Move.FLY, "Voando"),
-        Pair(Move.THINK, "Pensando"), Pair(Move.SHRUG, "Dando de ombros"), Pair(Move.STRETCH, "Espreguiçando")
+        Pair(Move.THINK, "Pensando"), Pair(Move.SHRUG, "Dando de ombros"), Pair(Move.STRETCH, "Espreguiçando"),
+        Pair(Move.SASS, "Mão na cintura"), Pair(Move.LOOK, "Olhando em volta"), Pair(Move.GLITCH, "Glitch")
     )
 
     private val cycle = object : Runnable {

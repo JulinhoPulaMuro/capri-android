@@ -229,7 +229,15 @@ class BodyView(context: Context) : View(context) {
         val pi = PI.toFloat()
         when (p) {
             Move.DANCE2 -> compute(s, Move.DANCE, t * 1.3f)
-            Move.SIT, Move.SHRUG -> compute(s, Move.IDLE, t)
+            Move.SIT, Move.SHRUG, Move.SASS, Move.LOOK -> compute(s, Move.IDLE, t)
+            Move.GLITCH -> {
+                val f = kotlin.math.floor(t * 14f).toInt()
+                s.bob = Anim.noise(f, 1) * 3f
+                s.sway = Anim.noise(f, 2) * 4f
+                s.tilt = Anim.noise(f, 3) * 8f
+                s.armL = -0.4f + Anim.noise(f, 4) * 0.5f
+                s.armR = 0.4f + Anim.noise(f, 5) * 0.5f
+            }
             Move.CHEER -> compute(s, Move.HOP, t)
             Move.FLY -> {
                 s.bob = sin(t * 2.5f) * 4f
@@ -328,6 +336,75 @@ class BodyView(context: Context) : View(context) {
         }
     }
 
+    // ---------- glitch ----------
+
+    /** Força do glitch de 0 a 1 mandada de fora (o teleporte). */
+    var glitch = 0f
+
+    /** Liga as falhas soltas: de vez em quando ela dá uma piscada de glitch sozinha. */
+    var autoGlitch = false
+
+    private val grnd = java.util.Random()
+    private var burstStart = 0L
+    private var burstMs = 0L
+    private var burstStr = 0f
+    private var nextBurst = 0L
+    private var glBmp: Bitmap? = null
+    private val glCanvas = Canvas()
+    private val glPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private var glitchNow = 0f
+
+    /** Uma piscada de glitch agora, com a força e a duração dadas. */
+    fun glitchBurst(strength: Float, ms: Long) {
+        burstStart = SystemClock.uptimeMillis()
+        burstMs = ms
+        burstStr = strength
+        invalidate()
+    }
+
+    private fun glitchLevel(now: Long): Float {
+        var g = glitch
+        if (pose == Move.GLITCH) {
+            val t = (now - poseStart) / 1000f
+            var env = Anim.sstep(t * 6f)
+            if (poseUntil != 0L) env = min(env, Anim.sstep((poseUntil - now) / 250f))
+            g = max(g, 0.65f * env)
+        }
+        if (autoGlitch) {
+            if (nextBurst == 0L) nextBurst = now + 3000L + grnd.nextInt(6000)
+            if (burstMs == 0L && now >= nextBurst) {
+                burstStart = now
+                burstMs = 140L + grnd.nextInt(220)
+                burstStr = 0.3f + grnd.nextFloat() * 0.3f
+                nextBurst = now + 5000L + grnd.nextInt(10000)
+            }
+        }
+        if (burstMs > 0L) {
+            val a = now - burstStart
+            if (a > burstMs) {
+                burstMs = 0L
+            } else if (a >= 0L) {
+                val k = a.toFloat() / burstMs.toFloat()
+                g = max(g, burstStr * (1f - k * k))
+            }
+        }
+        return g
+    }
+
+    /** Cópia da figura como está agora, sem efeito (para o rastro do teleporte). */
+    fun snapshot(): Bitmap? {
+        val wi = width
+        val hi = height
+        if (wi <= 0 || hi <= 0) return null
+        return try {
+            val b = Bitmap.createBitmap(wi, hi, Bitmap.Config.ARGB_8888)
+            drawFigure(Canvas(b), SystemClock.uptimeMillis(), wi.toFloat(), hi.toFloat())
+            b
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override fun onDraw(canvas: Canvas) {
         val now = SystemClock.uptimeMillis()
         if (poseUntil != 0L && now > poseUntil) {
@@ -335,16 +412,44 @@ class BodyView(context: Context) : View(context) {
             poseStart = now
             poseUntil = 0L
         }
-        val t = (now - poseStart) / 1000f
-        val dp = resources.displayMetrics.density
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
+        val g = glitchLevel(now)
+        glitchNow = g
+        if (g > 0.02f) {
+            drawGlitched(canvas, now, w, h, g)
+        } else {
+            drawFigure(canvas, now, w, h)
+        }
+        postInvalidateDelayed(if (effType() == 5) 16L else 33L)
+    }
+
+    private fun drawGlitched(canvas: Canvas, now: Long, w: Float, h: Float, g: Float) {
+        val wi = w.toInt()
+        val hi = h.toInt()
+        var b = glBmp
+        if (b == null || b.width != wi || b.height != hi) {
+            b?.recycle()
+            b = Bitmap.createBitmap(wi, hi, Bitmap.Config.ARGB_8888)
+            glBmp = b
+        }
+        b.eraseColor(0)
+        glCanvas.setBitmap(b)
+        drawFigure(glCanvas, now, w, h)
+        Glitch.draw(canvas, b, 0f, 0f, g, now / 70L, 1f, glPaint)
+    }
+
+    private fun drawFigure(canvas: Canvas, now: Long, w: Float, h: Float) {
+        var t = (now - poseStart) / 1000f
+        // com glitch o tempo anda aos soquinhos, como vídeo travando
+        if (glitchNow > 0.3f) t = kotlin.math.floor(t * 12f) / 12f
+        val dp = resources.displayMetrics.density
+
         val type = effType()
         if (type == 5) {
             drawRig(canvas, now, t, w, h)
-            postInvalidateDelayed(16)
             return
         }
         val s = St()
@@ -372,8 +477,6 @@ class BodyView(context: Context) : View(context) {
             drawHead(canvas, 0f, 0f, w, h, s.tilt)
         }
         canvas.restore()
-
-        postInvalidateDelayed(33)
     }
 
     private fun drawRig(canvas: Canvas, now: Long, t: Float, w: Float, h: Float) {
@@ -396,7 +499,7 @@ class BodyView(context: Context) : View(context) {
             Anim.pose(pose, t, rigPose)
         }
         // molas: começa e para suave, e as pontas chegam um pouco depois (também faz a troca de movimento)
-        smoother.step(rigPose, dt, shownPose)
+        if (pose == Move.GLITCH) smoother.snap(rigPose, shownPose) else smoother.step(rigPose, dt, shownPose)
 
         // inclina para o lado em que ela anda, de forma suave
         leanShown += (lean - leanShown) * (1f - exp(-6.8f * dt))

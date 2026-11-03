@@ -8,11 +8,11 @@ import kotlin.math.sin
 
 /** Os movimentos que a Capri sabe fazer. */
 enum class Move {
-    IDLE, WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN, SIT, FLY, SHRUG, CHEER;
+    IDLE, WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN, SIT, FLY, SHRUG, CHEER, SASS, LOOK, GLITCH;
 
     companion object {
         /** Gestos soltos que ela escolhe quando está sem fazer nada. */
-        val GESTURES = listOf(WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, SHRUG, CHEER)
+        val GESTURES = listOf(WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, SHRUG, CHEER, SASS, LOOK)
     }
 }
 
@@ -24,6 +24,12 @@ object Anim {
         Move.IDLE, Move.WALK, Move.TALK, Move.THINK, Move.LISTEN, Move.SIT, Move.FLY, Move.DANCE,
         Move.DANCE2 -> true
         else -> false
+    }
+
+    /** Ruído repetível entre -1 e 1: o mesmo (quadro, i) dá sempre o mesmo número. */
+    fun noise(frame: Int, i: Int): Float {
+        val x = sin(frame * 12.9898f + i * 78.233f) * 43758.547f
+        return (x - kotlin.math.floor(x)) * 2f - 1f
     }
 
     /** Sobe de 0 a 1 devagar no começo e no fim (sem quina). */
@@ -215,6 +221,46 @@ object Anim {
                 p.shS[0] = 0.84f; p.shS[1] = 0.84f
                 p.ft[0] = 0.36f + b3 * 0.1f; p.ft[1] = 0.36f - b3 * 0.1f
             }
+            Move.SASS -> {
+                // mão na cintura, quadril de lado e a cabeça inclinada: pose de quem está se achando
+                val e = sstep(t * 2.2f)
+                val sw = sin(t * 1.6f)
+                p.dx = 0.012f * e
+                p.dy = sin(t * 3.2f) * 0.002f
+                p.rot = -0.03f * e + sw * 0.01f
+                p.tor = -0.05f * e + sw * 0.02f
+                p.head = (0.12f + sin(t * 1.3f) * 0.03f) * e
+                p.ua[1] = 0.14f + 0.55f * e; p.fa[1] = -1.45f * e; p.ha[1] = 0.2f * e
+                p.ua[0] = 0.14f + 0.04f * sw; p.fa[0] = 0.08f
+                p.th[0] = 0.03f + 0.05f * e; p.th[1] = 0.03f
+                p.ft[0] = 0.08f * e
+            }
+            Move.LOOK -> {
+                // olha em volta, curiosa: a cabeça vai primeiro e o corpo acompanha um pouco depois
+                val a = sin(t * 1.5f)
+                p.head = a * 0.2f + sin(t * 3f) * 0.02f
+                p.tor = sin(t * 1.5f - 0.7f) * 0.05f
+                p.rot = sin(t * 1.5f - 1.2f) * 0.015f
+                p.dx = sin(t * 1.5f - 1.2f) * 0.006f
+                p.dy = sin(t * 3f) * 0.002f
+                p.ua[0] = 0.14f + sin(t * 1.5f - 1.4f) * 0.05f; p.ua[1] = 0.14f - sin(t * 1.5f - 1.4f) * 0.05f
+                p.fa[0] = 0.07f; p.fa[1] = 0.07f
+                p.th[0] = 0.03f; p.th[1] = 0.03f
+            }
+            Move.GLITCH -> {
+                // falha: a pose pula de um quadro para outro, como um vídeo travando
+                val f = kotlin.math.floor(t * 14f).toInt()
+                val k = if (f % 3 == 2) 1.4f else 1f
+                p.dx = noise(f, 0) * 0.02f * k
+                p.dy = noise(f, 1) * 0.008f
+                p.rot = noise(f, 2) * 0.05f * k
+                p.tor = noise(f, 3) * 0.1f * k
+                p.head = noise(f, 4) * 0.22f * k
+                p.ua[0] = 0.4f + (noise(f, 5) + 1f) * 0.6f; p.ua[1] = 0.4f + (noise(f, 6) + 1f) * 0.6f
+                p.fa[0] = noise(f, 7) * 0.7f; p.fa[1] = noise(f, 8) * 0.7f
+                p.th[0] = 0.04f + noise(f, 9) * 0.08f; p.th[1] = 0.04f + noise(f, 10) * 0.08f
+                p.ft[0] = noise(f, 11) * 0.2f; p.ft[1] = noise(f, 12) * 0.2f
+            }
             Move.SHRUG -> {
                 val ph = sstep(t * 3.2f) * (1f - sstep((t - 1.4f) * 2.4f))
                 p.dy = -0.01f * ph
@@ -269,6 +315,17 @@ class PoseSmoother {
             p.th[k] = o[13 + k]; p.sh[k] = o[15 + k]; p.ft[k] = o[17 + k]
             p.thS[k] = o[19 + k]; p.shS[k] = o[21 + k]
         }
+    }
+
+    /** Vai direto para a pose, sem mola (para falhas, que precisam dar saltos secos). */
+    fun snap(target: RigPose, out: RigPose) {
+        flat(target, tg)
+        for (i in 0 until N) {
+            x[i] = tg[i]
+            v[i] = 0f
+        }
+        ready = true
+        unflat(x, out)
     }
 
     /** Avança dt segundos em direção a target e escreve o resultado em out. */

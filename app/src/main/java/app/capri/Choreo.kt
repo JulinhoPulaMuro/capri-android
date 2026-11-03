@@ -104,6 +104,9 @@ object Choreo {
 
     private fun smooth(k: Float): Float = k * k * (3f - 2f * k)
 
+    /** Em que ponto (0 a 1) do teleporte ela some de um lugar e aparece no outro. */
+    const val TELE_K = 0.42f
+
     /** Integral de uma rampa suave (0 a 1 em a) até x. */
     private fun ramp(x: Float, a: Float): Float {
         val y = min(1f, max(0f, x / a))
@@ -139,12 +142,18 @@ object Choreo {
         val loopCx: Float = 0f,
         val loopCy: Float = 0f,
         val loopRx: Float = 0f,
-        val loopRy: Float = 0f
+        val loopRy: Float = 0f,
+        /** Teleporte: fica em from até TELE_K e aparece em to de uma vez (com glitch). */
+        val teleport: Boolean = false
     ) {
         val freeLoop: Boolean get() = loopRx > 0f
 
         fun pos(k0: Float, e: Env, o: FloatArray) {
             val k = min(1f, max(0f, k0))
+            if (teleport) {
+                resolve(if (k < TELE_K) from else to, e, o)
+                return
+            }
             if (freeLoop) {
                 val th = (2.0 * PI * warp(k)).toFloat() - (PI / 2.0).toFloat()
                 val x = loopCx + loopRx * cos(th) - e.figW / 2f
@@ -177,6 +186,9 @@ object Choreo {
         Move.LEAN -> 2400L
         Move.SHRUG -> 1900L
         Move.CHEER -> 2500L
+        Move.SASS -> 3000L
+        Move.LOOK -> 3300L
+        Move.GLITCH -> 1100L
         else -> 2500L
     }
 
@@ -184,6 +196,7 @@ object Choreo {
     class Planner(private val rnd: Random) {
         private var lastGesture: Move? = null
         private var lastKind = -1
+        private var glitchOn = true
 
         private fun gesture(): Move {
             var m: Move
@@ -198,11 +211,11 @@ object Choreo {
 
         private fun pick(weights: IntArray): Int {
             var total = 0
-            for (i in weights.indices) total += if (i == lastKind) max(1, weights[i] / 3) else weights[i]
+            for (i in weights.indices) total += if (i == lastKind && weights[i] > 0) max(1, weights[i] / 3) else weights[i]
             if (total <= 0) return 0
             var r = rnd.nextInt(total)
             for (i in weights.indices) {
-                val w = if (i == lastKind) max(1, weights[i] / 3) else weights[i]
+                val w = if (i == lastKind && weights[i] > 0) max(1, weights[i] / 3) else weights[i]
                 if (r < w) {
                     lastKind = i
                     return i
@@ -226,6 +239,8 @@ object Choreo {
             if (d <= e.figW * 1.6f && dy < 0.3f * e.figH) {
                 val ms = max(500L, (d / (70f * e.density) * 1000f).toLong())
                 out.add(Act(Move.WALK, ms, cur, to, ease = true))
+            } else if (glitchOn && rnd.nextInt(3) == 0) {
+                out.add(Act(Move.GLITCH, 1000L, cur, to, teleport = true))
             } else {
                 val ms = max(800L, (d / (230f * e.density) * 1000f).toLong())
                 out.add(Act(Move.FLY, ms, cur, to, ease = true))
@@ -234,7 +249,8 @@ object Choreo {
 
         private fun hold(m: Move, ms: Long, at: Anchor) = Act(m, ms, at, at)
 
-        fun plan(e: Env, curX: Float, curY: Float, moves: Boolean, wander: Boolean): List<Act> {
+        fun plan(e: Env, curX: Float, curY: Float, moves: Boolean, wander: Boolean, glitch: Boolean = true): List<Act> {
+            glitchOn = glitch
             val out = ArrayList<Act>()
             val cur: Anchor = Anchor.Abs(e.clampX(curX), e.clampY(curY))
             if (e.hasInput) {
@@ -248,7 +264,10 @@ object Choreo {
         private fun planFree(e: Env, cur: Anchor, moves: Boolean, wander: Boolean, out: MutableList<Act>) {
             val here = FloatArray(2)
             resolve(cur, e, here)
-            val w = intArrayOf(3, if (moves) 4 else 0, if (wander) 3 else 0, if (wander) 2 else 0, if (wander && moves) 1 else 0)
+            val w = intArrayOf(
+                3, if (moves) 4 else 0, if (wander) 3 else 0, if (wander) 2 else 0, if (wander && moves) 1 else 0,
+                if (wander && glitchOn) 2 else 0, if (moves && glitchOn) 1 else 0
+            )
             when (pick(w)) {
                 0 -> out.add(hold(Move.IDLE, 2500L + rnd.nextInt(2500), cur))
                 1 -> {
@@ -280,6 +299,15 @@ object Choreo {
                     out.add(Act(Move.FLY, ms, cur, to, ease = true))
                     out.add(hold(Move.IDLE, 1200L, to))
                 }
+                5 -> {
+                    // some com glitch e aparece em outro lugar, deixando um rastro
+                    val tx = e.clampX(rnd.nextFloat() * (e.screenW - e.figW))
+                    val ty = e.clampY(e.minY + rnd.nextFloat() * (e.maxBottom - e.minY - e.figH))
+                    val to = Anchor.Abs(tx, ty)
+                    out.add(Act(Move.GLITCH, 1000L, cur, to, teleport = true))
+                    out.add(hold(Move.IDLE, 1400L, to))
+                }
+                6 -> out.add(hold(Move.GLITCH, 1100L, cur))
                 else -> {
                     // voa em círculos
                     val rx = max(50f * e.density, 0.7f * e.figW)
@@ -306,7 +334,8 @@ object Choreo {
                 if (wander) 3 else 2,           // sentar
                 if (wander) 2 else 0,           // voar em volta
                 if (moves) 3 else 0,            // gesto
-                1                               // parada
+                1,                              // parada
+                if (wander && glitchOn) 2 else 0 // teleporte
             )
             when (pick(w)) {
                 0 -> {
@@ -337,6 +366,11 @@ object Choreo {
                     transit(e, cur, s, out)
                     val g = gesture()
                     out.add(hold(g, gestureMs(g), s))
+                }
+                5 -> {
+                    val s = Anchor.Edge(0.08f + rnd.nextFloat() * 0.84f, false)
+                    out.add(Act(Move.GLITCH, 1000L, cur, s, teleport = true))
+                    out.add(hold(Move.IDLE, 1200L, s))
                 }
                 else -> {
                     val s = Anchor.Edge(u0, false)

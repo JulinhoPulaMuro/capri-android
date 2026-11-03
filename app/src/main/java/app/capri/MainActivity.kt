@@ -295,6 +295,15 @@ class MainActivity : Activity() {
             pushVoice()
         }
         col.addView(wander)
+        val glitch = Switch(this)
+        glitch.text = "Efeito glitch: ela some e reaparece em outro lugar"
+        glitch.setTextColor(INK)
+        glitch.isChecked = prefs.glitch
+        glitch.setOnCheckedChangeListener { _, checked ->
+            prefs.glitch = checked
+            pushVoice()
+        }
+        col.addView(glitch)
         col.addView(body("O corpo é um desenho simples feito de formas, para combinar com a imagem que você escolheu como rosto. Se a sua imagem já é o corpo inteiro, escolha \"Sem corpo\"."))
     }
 
@@ -420,7 +429,8 @@ class MainActivity : Activity() {
     private fun nextPose() {
         val all = arrayOf(
             Move.WAVE, Move.DANCE, Move.DANCE2, Move.HOP, Move.SPIN, Move.STRETCH, Move.LEAN,
-            Move.WALK, Move.SIT, Move.FLY, Move.CHEER, Move.SHRUG, Move.THINK, Move.LISTEN, Move.TALK
+            Move.WALK, Move.SIT, Move.FLY, Move.CHEER, Move.SHRUG, Move.THINK, Move.LISTEN, Move.TALK,
+            Move.SASS, Move.LOOK, Move.GLITCH
         )
         poseIdx = (poseIdx + 1) % all.size
         bodyPreview.setPose(all[poseIdx], 3000L)

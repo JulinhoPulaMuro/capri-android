@@ -107,6 +107,10 @@ class OverlayService : Service() {
     private var dragging = false
     private var touching = false
     private val tmp2 = FloatArray(2)
+    private val tmpA = FloatArray(2)
+    private val tmpB = FloatArray(2)
+    private var teleAct: Choreo.Act? = null
+    private var ghost: GhostView? = null
     private val planner = Choreo.Planner(java.util.Random())
     private var dead = false
     private var engineInUse = ""
@@ -203,6 +207,7 @@ class OverlayService : Service() {
         tts?.stop()
         tts?.shutdown()
         tts = null
+        removeGhost()
         for (v in listOf<View?>(charRoot, bubbleRoot, if (inputAdded) inputRoot else null)) {
             if (v != null) {
                 try {
@@ -402,6 +407,7 @@ class OverlayService : Service() {
         inputParams = ip
         input = et
         figure = img
+        img.autoGlitch = prefs.glitch
         dot = d
 
         loadFigure()
@@ -534,7 +540,8 @@ class OverlayService : Service() {
         val had = env.hasInput
         if (!prefs.wander) env.hasInput = false
         try {
-            acts.addAll(planner.plan(env, curX, curY, prefs.moves, prefs.wander))
+            figure?.autoGlitch = prefs.glitch
+            acts.addAll(planner.plan(env, curX, curY, prefs.moves, prefs.wander, prefs.glitch))
         } finally {
             env.hasInput = had
         }
@@ -559,13 +566,33 @@ class OverlayService : Service() {
             curY = tmp2[1]
             actIdx++
             actStart = now
+            f.glitch = 0f
         } else {
-            if (f.currentPose() != a.move) f.setPose(a.move)
+            val want = if (a.teleport) {
+                if (k > 0.08f && k < 0.62f) Move.GLITCH else Move.IDLE
+            } else {
+                a.move
+            }
+            if (f.currentPose() != want) f.setPose(want)
             a.pos(k, env, tmp2)
             curX = tmp2[0]
             curY = tmp2[1]
+            if (a.teleport) {
+                // a força do glitch sobe até o salto e depois vai apagando
+                val j = Choreo.TELE_K
+                f.glitch = if (k < j) 0.2f + 0.8f * (k / j) * (k / j) else 1f - 0.9f * ((k - j) / (1f - j))
+                if (teleAct !== a && k >= j) {
+                    teleAct = a
+                    a.pos(0f, env, tmpA)
+                    a.pos(1f, env, tmpB)
+                    spawnGhost(tmpA[0], tmpA[1], tmpB[0], tmpB[1])
+                }
+            } else {
+                f.glitch = 0f
+            }
         }
-        val vx = curX - px
+        // no teleporte ela não anda: o salto não conta como velocidade
+        val vx = if (a.teleport) 0f else curX - px
         f.kick(vx.coerceIn(-8f, 8f))
         // velocidade em pixels por segundo: inclina para o lado em que ela vai (voando mais, andando menos)
         // e faz o passo acompanhar o chão
@@ -573,6 +600,49 @@ class OverlayService : Service() {
         val leanK = if (a.move == Move.FLY) 0.0004f else 0.0002f
         f.lean = (vps * leanK).coerceIn(-0.22f, 0.22f)
         f.speed = if (a.move == Move.WALK) Math.abs(vps) else -1f
+    }
+
+    // ---------- rastro do teleporte ----------
+
+    private fun spawnGhost(ax: Float, ay: Float, bx: Float, by: Float) {
+        val f = figure ?: return
+        val bmp = f.snapshot() ?: return
+        removeGhost()
+        val left = minOf(ax, bx).toInt()
+        val top = minOf(ay, by).toInt()
+        val gw = Math.abs(bx - ax).toInt() + bmp.width + 2
+        val gh = Math.abs(by - ay).toInt() + bmp.height + 2
+        val p = WindowManager.LayoutParams(
+            gw, gh,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        p.gravity = Gravity.TOP or Gravity.START
+        p.x = left
+        p.y = top
+        val g = GhostView(this, bmp, ax - left, ay - top, bx - left, by - top)
+        g.onDone = { removeGhost() }
+        try {
+            wm.addView(g, p)
+            ghost = g
+        } catch (e: Exception) {
+            ghost = null
+        }
+    }
+
+    private fun removeGhost() {
+        val g = ghost ?: return
+        ghost = null
+        try {
+            wm.removeView(g)
+        } catch (e: Exception) {
+            // já removido
+        }
     }
 
     /** Se ela estava sentada na caixa e vai falar ou pensar, levanta antes. */
@@ -596,6 +666,7 @@ class OverlayService : Service() {
             val f = figure
             if (dragging || touching) {
                 f?.lean = 0f
+                f?.glitch = 0f
                 actStart += dtMs
             } else if (ov != null) {
                 if (acts.isNotEmpty()) {
@@ -604,6 +675,7 @@ class OverlayService : Service() {
                 }
                 if (f != null && f.currentPose() != ov) f.setPose(ov)
                 f?.lean = 0f
+                f?.glitch = 0f
             } else {
                 runChoreo(now, env)
             }
@@ -931,7 +1003,10 @@ class OverlayService : Service() {
 
     private fun setShown(on: Boolean) {
         charRoot?.visibility = if (on) View.VISIBLE else View.GONE
-        if (!on) hideBubbleNow()
+        if (!on) {
+            hideBubbleNow()
+            removeGhost()
+        }
         shown = on
         refreshTile()
     }
@@ -942,6 +1017,7 @@ class OverlayService : Service() {
         userHidden = false
         val wasHidden = !shown
         setShown(true)
+        if (wasHidden && prefs.glitch) figure?.glitchBurst(0.85f, 650L)
         if (wasHidden && prefs.moves) queueGesture(Move.WAVE, 1800L)
     }
 

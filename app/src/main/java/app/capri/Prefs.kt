@@ -193,6 +193,13 @@ class Prefs(context: Context) {
             sp.edit().putBoolean("wander", value).apply()
         }
 
+    /** Efeito de falha de sinal: some e reaparece em outro lugar, com rastro, e dá piscadas soltas. */
+    var glitch: Boolean
+        get() = sp.getBoolean("glitch", true)
+        set(value) {
+            sp.edit().putBoolean("glitch", value).apply()
+        }
+
     var posX: Int
         get() = sp.getInt("posX", -1)
         set(value) {
