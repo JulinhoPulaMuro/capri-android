@@ -229,7 +229,8 @@ class BodyView(context: Context) : View(context) {
         val pi = PI.toFloat()
         when (p) {
             Move.DANCE2 -> compute(s, Move.DANCE, t * 1.3f)
-            Move.SIT, Move.SHRUG, Move.SASS, Move.LOOK -> compute(s, Move.IDLE, t)
+            Move.SIT, Move.SHRUG, Move.SASS, Move.LOOK, Move.CURTSY, Move.PRESENT -> compute(s, Move.IDLE, t)
+            Move.ROUTINE, Move.SWAY -> compute(s, Move.DANCE, t)
             Move.GLITCH -> {
                 val f = kotlin.math.floor(t * 14f).toInt()
                 s.bob = Anim.noise(f, 1) * 3f

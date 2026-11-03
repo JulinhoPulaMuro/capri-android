@@ -8,11 +8,11 @@ import kotlin.math.sin
 
 /** Os movimentos que a Capri sabe fazer. */
 enum class Move {
-    IDLE, WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN, SIT, FLY, SHRUG, CHEER, SASS, LOOK, GLITCH;
+    IDLE, WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, WALK, TALK, THINK, LISTEN, SIT, FLY, SHRUG, CHEER, SASS, LOOK, GLITCH, ROUTINE, CURTSY, PRESENT, SWAY;
 
     companion object {
         /** Gestos soltos que ela escolhe quando está sem fazer nada. */
-        val GESTURES = listOf(WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, SHRUG, CHEER, SASS, LOOK)
+        val GESTURES = listOf(WAVE, DANCE, DANCE2, HOP, SPIN, STRETCH, LEAN, SHRUG, CHEER, SASS, LOOK, CURTSY, PRESENT, SWAY, ROUTINE)
     }
 }
 
@@ -41,19 +41,55 @@ object Anim {
     /** Parte positiva de x (de -1 a 1), suave: começa e termina sem quina. */
     fun bump(x: Float): Float = if (x <= 0f) 0f else sstep(x)
 
+    private val scratch = RigPose()
+
+    /** Uma das quatro partes da coreografia. local vai de 0 a 4 (tempos dentro da parte). */
+    private fun routineSeg(seg: Int, t: Float, local: Float, p: RigPose) {
+        when (seg) {
+            0 -> pose(Move.DANCE, t, p)
+            1 -> pose(Move.DANCE2, t * 0.9f, p)
+            2 -> {
+                // ondinha com os braços, um de cada vez, e passos curtos
+                pose(Move.SWAY, t * 1.6f, p)
+                val c = t * 3.2f
+                p.ua[0] = 0.4f + bump(sin(c)) * 2.2f
+                p.ua[1] = 0.4f + bump(-sin(c)) * 2.2f
+                p.fa[0] = 0.2f; p.fa[1] = 0.2f
+                p.head = sin(c) * 0.2f
+            }
+            else -> {
+                // um giro completo e uma pose final
+                val u = sstep(local / 1.6f) * 2f * PI.toFloat()
+                if (local < 1.6f) {
+                    pose(Move.IDLE, t, p)
+                    val cs = kotlin.math.cos(u)
+                    p.sx = if (abs(cs) < 0.06f) (if (cs < 0f) -0.06f else 0.06f) else cs
+                    p.ua[0] = 0.9f; p.ua[1] = 0.9f
+                    p.fa[0] = 0.2f; p.fa[1] = 0.2f
+                    p.th[0] = 0.12f; p.th[1] = 0.12f
+                    p.dy = -sin(local / 1.6f * PI.toFloat()) * 0.03f
+                } else {
+                    pose(Move.SASS, local - 1.6f + 0.9f, p)
+                }
+            }
+        }
+    }
+
     fun pose(m: Move, t: Float, p: RigPose) {
         p.reset()
         val pi = PI.toFloat()
         when (m) {
             Move.IDLE -> {
-                // respira e passa o peso de um pé para o outro, sem ficar parada de verdade
+                // respira, passa o peso de um pé para o outro e o peito acompanha ao contrário do quadril
                 val br = sin(t * 1.7f)
                 val sw = sin(t * 0.6f)
                 p.dy = br * 0.003f
                 p.dx = sw * 0.006f
                 p.rot = -sw * 0.012f
-                p.tor = sin(t * 0.9f) * 0.025f + sw * 0.01f
-                p.head = sin(t * 0.8f - 0.7f) * 0.045f
+                p.tor = sw * 0.012f + sin(t * 0.9f) * 0.012f
+                p.chest = -sw * 0.02f + sin(t * 0.9f - 0.5f) * 0.02f
+                p.head = sin(t * 0.8f - 0.7f) * 0.045f - p.chest * 0.5f
+                p.shr[0] = 0.004f * (1f + br); p.shr[1] = 0.004f * (1f + br)
                 p.ua[0] = 0.14f + br * 0.03f - sw * 0.02f; p.ua[1] = 0.14f - br * 0.03f + sw * 0.02f
                 p.fa[0] = 0.06f + sin(t * 1.7f - 0.8f) * 0.02f; p.fa[1] = 0.06f + sin(t * 1.7f - 1.1f) * 0.02f
                 p.th[0] = 0.03f + sw * 0.015f; p.th[1] = 0.03f - sw * 0.015f
@@ -70,14 +106,17 @@ object Anim {
                 p.th[0] = 0.03f; p.th[1] = 0.03f
             }
             Move.DANCE -> {
-                // passos de lado, levantando um pé de cada vez
-                val w = sin(t * 6f)
+                // passos de lado: o quadril vai para um lado, o peito para o outro e a cabeça chega por último
+                val c = t * 6f
+                val w = sin(c)
                 val l = bump(w)
                 val r = bump(-w)
                 p.dy = -abs(w) * 0.025f
                 p.rot = w * 0.05f
-                p.tor = -w * 0.08f
-                p.head = -w * 0.14f
+                p.tor = -w * 0.07f
+                p.chest = sin(c - 0.9f) * 0.13f
+                p.head = sin(c - 1.8f) * 0.2f
+                p.shr[0] = 0.012f * bump(sin(2f * c)); p.shr[1] = 0.012f * bump(sin(2f * c - 0.5f))
                 p.ua[0] = 1.1f + w * 0.5f; p.ua[1] = 1.1f - w * 0.5f
                 p.fa[0] = 0.5f * sin(t * 12f); p.fa[1] = 0.5f * sin(t * 12f + 1f)
                 p.th[0] = 0.06f + 0.12f * l; p.th[1] = 0.06f + 0.12f * r
@@ -85,14 +124,17 @@ object Anim {
                 p.shS[0] = 1f - 0.45f * l; p.shS[1] = 1f - 0.45f * r
             }
             Move.DANCE2 -> {
-                // braços para cima e requebrado
-                val w = sin(t * 5f)
+                // braços para cima e requebrado, com a coluna ondulando de baixo para cima
+                val c = t * 5f
+                val w = sin(c)
                 val l = bump(w)
                 val r = bump(-w)
                 p.dy = -abs(w) * 0.02f
-                p.rot = w * 0.08f
-                p.tor = -w * 0.1f
-                p.head = w * 0.18f
+                p.rot = w * 0.07f
+                p.tor = -w * 0.08f
+                p.chest = sin(c - 0.8f) * 0.15f
+                p.head = sin(c - 1.6f) * 0.2f
+                p.shr[0] = 0.01f * bump(w); p.shr[1] = 0.01f * bump(-w)
                 p.ua[0] = 2.5f + w * 0.3f; p.ua[1] = 2.5f - w * 0.3f
                 p.fa[0] = sin(t * 10f) * 0.35f; p.fa[1] = -sin(t * 10f) * 0.35f
                 p.th[0] = 0.1f + 0.14f * l; p.th[1] = 0.1f + 0.14f * r
@@ -141,7 +183,7 @@ object Anim {
                 p.th[0] = 0.05f + 0.06f * ph; p.th[1] = 0.03f
             }
             Move.WALK -> {
-                // andar de frente: um pé sai do chão de cada vez, o quadril passa para o pé de apoio,
+                // andar de frente: um pé sai do chão de cada vez, o quadril e os ombros giram em sentidos opostos,
                 // os braços balançam ao contrário e a cabeça fica firme. t aqui é a "fase do passo".
                 val c = t * 6.5f
                 val w = sin(c)
@@ -150,8 +192,10 @@ object Anim {
                 p.dy = -w * w * 0.016f
                 p.dx = w * 0.008f
                 p.rot = -w * 0.03f
-                p.tor = w * 0.05f
-                p.head = -w * 0.045f
+                p.tor = w * 0.04f
+                p.chest = -w * 0.075f
+                p.head = -(p.rot + p.tor + p.chest) * 0.75f
+                p.shr[0] = 0.01f * bump(w); p.shr[1] = 0.01f * bump(-w)
                 p.th[0] = 0.05f + 0.11f * l; p.th[1] = 0.05f + 0.11f * r
                 p.thS[0] = 1f - 0.26f * l; p.thS[1] = 1f - 0.26f * r
                 p.shS[0] = 1f - 0.42f * l; p.shS[1] = 1f - 0.42f * r
@@ -161,13 +205,22 @@ object Anim {
                 p.ha[0] = -w * 0.1f; p.ha[1] = w * 0.1f
             }
             Move.TALK -> {
+                // falando: a cada trechinho ela muda o gesto das mãos, balança a cabeça no ritmo e enfatiza
+                val seg = kotlin.math.floor(t / 0.85f).toInt()
+                val n0 = noise(seg, 0)
+                val n1 = noise(seg, 1)
+                val n2 = noise(seg, 2)
+                val beat = bump(sin(t * 5.2f))
                 p.dy = -abs(sin(t * 9f)) * 0.004f
-                p.tor = sin(t * 3f) * 0.04f
-                p.head = sin(t * 4.5f) * 0.08f
-                p.ua[0] = 0.4f + sin(t * 3f) * 0.25f
-                p.fa[0] = 0.5f
-                p.ua[1] = 0.9f + sin(t * 4.5f) * 0.35f
-                p.fa[1] = 0.8f + sin(t * 4.5f + 1f) * 0.3f
+                p.tor = sin(t * 1.7f) * 0.02f + n0 * 0.015f
+                p.chest = n1 * 0.04f + sin(t * 2.6f - 0.5f) * 0.025f
+                p.head = n2 * 0.1f + sin(t * 4.4f) * 0.04f
+                p.shr[0] = 0.008f * beat; p.shr[1] = 0.008f * beat
+                p.ua[1] = 0.7f + (n0 + 1f) * 0.45f + beat * 0.2f
+                p.fa[1] = 0.5f + (n1 + 1f) * 0.5f - beat * 0.3f
+                p.ha[1] = n2 * 0.3f
+                p.ua[0] = 0.25f + (n1 + 1f) * 0.2f + sin(t * 2.4f) * 0.1f
+                p.fa[0] = 0.4f + (n2 + 1f) * 0.25f
                 p.th[0] = 0.03f; p.th[1] = 0.03f
             }
             Move.THINK -> {
@@ -191,8 +244,10 @@ object Anim {
                 // sentada na beirada: as coxas vêm para a frente (encurtadas) e as pernas balançam
                 val k = sin(t * 2.4f)
                 p.dy = sin(t * 1.5f) * 0.002f
-                p.tor = sin(t * 1.2f) * 0.03f
+                p.tor = sin(t * 1.2f) * 0.02f
+                p.chest = sin(t * 1.2f - 0.6f) * 0.03f
                 p.head = sin(t * 1.0f) * 0.06f
+                p.shr[0] = 0.004f * (1f + sin(t * 1.7f)); p.shr[1] = 0.004f * (1f + sin(t * 1.7f))
                 p.ua[0] = 0.3f; p.ua[1] = 0.3f
                 p.fa[0] = 0.4f; p.fa[1] = 0.4f
                 p.th[0] = 0.14f; p.th[1] = 0.14f
@@ -201,7 +256,7 @@ object Anim {
                 p.ft[0] = k * 0.2f; p.ft[1] = -k * 0.2f
             }
             Move.FLY -> {
-                // flutuando: sobe e desce devagar e cada parte do corpo chega um pouquinho depois da outra
+                // flutuando: sobe e desce devagar e a coluna ondula, cada parte chegando depois da outra
                 val f = 1.9f
                 val b = sin(t * f)
                 val b1 = sin(t * f - 0.8f)
@@ -210,8 +265,10 @@ object Anim {
                 p.dy = b * 0.03f
                 p.dx = sin(t * 0.8f) * 0.008f
                 p.rot = sin(t * 1.1f) * 0.045f
-                p.tor = b1 * 0.035f
-                p.head = sin(t * 1.3f - 0.8f) * 0.06f
+                p.tor = b1 * 0.04f
+                p.chest = sin(t * f - 1.4f) * 0.06f
+                p.head = sin(t * 1.3f - 1.0f) * 0.07f
+                p.shr[0] = 0.006f * (1f + b); p.shr[1] = 0.006f * (1f + b1)
                 p.ua[0] = 0.62f + b1 * 0.17f; p.ua[1] = 0.62f + b2 * 0.17f
                 p.fa[0] = 0.3f + b2 * 0.13f; p.fa[1] = 0.3f + b3 * 0.13f
                 p.ha[0] = b3 * 0.2f; p.ha[1] = sin(t * f - 2.8f) * 0.2f
@@ -256,10 +313,72 @@ object Anim {
                 p.rot = noise(f, 2) * 0.05f * k
                 p.tor = noise(f, 3) * 0.1f * k
                 p.head = noise(f, 4) * 0.22f * k
+                p.chest = noise(f, 13) * 0.12f * k
+                p.shr[0] = noise(f, 14) * 0.012f; p.shr[1] = noise(f, 15) * 0.012f
                 p.ua[0] = 0.4f + (noise(f, 5) + 1f) * 0.6f; p.ua[1] = 0.4f + (noise(f, 6) + 1f) * 0.6f
                 p.fa[0] = noise(f, 7) * 0.7f; p.fa[1] = noise(f, 8) * 0.7f
                 p.th[0] = 0.04f + noise(f, 9) * 0.08f; p.th[1] = 0.04f + noise(f, 10) * 0.08f
                 p.ft[0] = noise(f, 11) * 0.2f; p.ft[1] = noise(f, 12) * 0.2f
+            }
+            Move.ROUTINE -> {
+                // coreografia de 4 partes (cada uma com 4 tempos) que se emendam sem tranco
+                val beat = t * 2.1f
+                val blk = kotlin.math.floor(beat / 4f)
+                val seg = blk.toInt() % 4
+                val local = beat - blk * 4f
+                routineSeg(seg, t, local, p)
+                if (local > 3.5f) {
+                    val q = scratch
+                    routineSeg((seg + 1) % 4, t, 0f, q)
+                    p.mixWith(q, sstep((local - 3.5f) / 0.5f))
+                }
+            }
+            Move.CURTSY -> {
+                // reverência: dobra os joelhos, abaixa a cabeça e abre os braços
+                val d = sstep(t * 1.8f) * (1f - sstep((t - 1.3f) * 1.8f))
+                p.dy = 0.02f * d
+                p.sy = 1f - 0.04f * d
+                p.tor = -0.03f * d
+                p.chest = 0.1f * d
+                p.head = 0.18f * d
+                p.shr[0] = 0.006f * d; p.shr[1] = 0.006f * d
+                p.ua[0] = 0.14f + 0.55f * d; p.ua[1] = 0.14f + 0.55f * d
+                p.fa[0] = -0.3f * d; p.fa[1] = -0.3f * d
+                p.th[0] = 0.03f + 0.07f * d; p.th[1] = 0.03f + 0.13f * d
+                p.thS[0] = 1f - 0.16f * d; p.thS[1] = 1f - 0.2f * d
+                p.shS[0] = 1f - 0.3f * d; p.shS[1] = 1f - 0.32f * d
+            }
+            Move.PRESENT -> {
+                // apresenta algo com o braço aberto, a outra mão na cintura
+                val e = sstep(t * 2f)
+                val sw = sin(t * 2.2f)
+                p.dx = -0.008f * e
+                p.rot = 0.02f * e
+                p.tor = 0.02f * e
+                p.chest = (0.07f + sw * 0.015f) * e
+                p.head = (0.12f + sin(t * 1.6f) * 0.03f) * e
+                p.shr[1] = 0.01f * e
+                p.ua[1] = 0.14f + (1.4f + sw * 0.07f) * e
+                p.fa[1] = (0.25f + sin(t * 2.2f - 0.6f) * 0.08f) * e
+                p.ha[1] = (0.3f + sin(t * 2.2f - 1.2f) * 0.2f) * e
+                p.ua[0] = 0.14f + 0.55f * e; p.fa[0] = -1.45f * e; p.ha[0] = 0.2f * e
+                p.th[0] = 0.03f; p.th[1] = 0.03f + 0.05f * e
+            }
+            Move.SWAY -> {
+                // dança lenta com os braços para cima, a coluna ondulando devagar
+                val c = t * 2.4f
+                p.dx = sin(c) * 0.012f
+                p.dy = -abs(sin(c)) * 0.008f
+                p.rot = sin(c) * 0.03f
+                p.tor = sin(c) * 0.05f
+                p.chest = sin(c - 0.7f) * 0.1f
+                p.head = sin(c - 1.4f) * 0.15f
+                p.shr[0] = 0.01f * (1f + sin(c)); p.shr[1] = 0.01f * (1f - sin(c))
+                p.ua[0] = 2.0f + sin(c - 0.4f) * 0.35f; p.ua[1] = 2.0f - sin(c - 0.4f) * 0.35f
+                p.fa[0] = 0.25f + sin(c - 1.0f) * 0.2f; p.fa[1] = 0.25f - sin(c - 1.0f) * 0.2f
+                p.ha[0] = sin(c - 1.6f) * 0.25f; p.ha[1] = -sin(c - 1.6f) * 0.25f
+                p.th[0] = 0.07f + 0.05f * sin(c); p.th[1] = 0.07f - 0.05f * sin(c)
+                p.ft[0] = 0.1f * sin(c); p.ft[1] = -0.1f * sin(c)
             }
             Move.SHRUG -> {
                 val ph = sstep(t * 3.2f) * (1f - sstep((t - 1.4f) * 2.4f))
@@ -301,7 +420,9 @@ class PoseSmoother {
 
     private fun flat(p: RigPose, o: FloatArray) {
         o[0] = p.dx; o[1] = p.dy; o[2] = p.rot; o[3] = p.sx; o[4] = p.sy; o[5] = p.tor; o[6] = p.head
+        o[23] = p.chest
         for (k in 0..1) {
+            o[24 + k] = p.shr[k]
             o[7 + k] = p.ua[k]; o[9 + k] = p.fa[k]; o[11 + k] = p.ha[k]
             o[13 + k] = p.th[k]; o[15 + k] = p.sh[k]; o[17 + k] = p.ft[k]
             o[19 + k] = p.thS[k]; o[21 + k] = p.shS[k]
@@ -310,7 +431,9 @@ class PoseSmoother {
 
     private fun unflat(o: FloatArray, p: RigPose) {
         p.dx = o[0]; p.dy = o[1]; p.rot = o[2]; p.sx = o[3]; p.sy = o[4]; p.tor = o[5]; p.head = o[6]
+        p.chest = o[23]
         for (k in 0..1) {
+            p.shr[k] = o[24 + k]
             p.ua[k] = o[7 + k]; p.fa[k] = o[9 + k]; p.ha[k] = o[11 + k]
             p.th[k] = o[13 + k]; p.sh[k] = o[15 + k]; p.ft[k] = o[17 + k]
             p.thS[k] = o[19 + k]; p.shS[k] = o[21 + k]
@@ -354,20 +477,22 @@ class PoseSmoother {
     }
 
     companion object {
-        const val N = 23
+        const val N = 26
 
         // frequência (rad/s) e amortecimento de cada valor da pose: quanto mais longe do tronco, mais atrasado e mais solto
         private val W = floatArrayOf(
             22f, 28f, 16f, 34f, 30f, 14f, 11f,
             15f, 15f, 13f, 13f, 11f, 11f,
             22f, 22f, 20f, 20f, 17f, 17f,
-            26f, 26f, 24f, 24f
+            26f, 26f, 24f, 24f,
+            12f, 20f, 20f
         )
         private val Z = floatArrayOf(
             1f, 0.9f, 1f, 1f, 0.85f, 0.9f, 0.7f,
             0.85f, 0.85f, 0.7f, 0.7f, 0.6f, 0.6f,
             1f, 1f, 0.9f, 0.9f, 0.75f, 0.75f,
-            1f, 1f, 1f, 1f
+            1f, 1f, 1f, 1f,
+            0.85f, 0.8f, 0.8f
         )
     }
 }

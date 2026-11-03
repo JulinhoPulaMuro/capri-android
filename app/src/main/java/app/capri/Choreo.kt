@@ -189,6 +189,10 @@ object Choreo {
         Move.SASS -> 3000L
         Move.LOOK -> 3300L
         Move.GLITCH -> 1100L
+        Move.ROUTINE -> 7600L
+        Move.CURTSY -> 2600L
+        Move.PRESENT -> 3000L
+        Move.SWAY -> 4200L
         else -> 2500L
     }
 

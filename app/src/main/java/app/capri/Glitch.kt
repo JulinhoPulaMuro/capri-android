@@ -18,8 +18,17 @@ import kotlin.math.min
  */
 object Glitch {
 
-    private val magenta = PorterDuffColorFilter(0xFFFF2BD6.toInt(), PorterDuff.Mode.SRC_IN)
-    private val cyan = PorterDuffColorFilter(0xFF2AF0FF.toInt(), PorterDuff.Mode.SRC_IN)
+    @Volatile
+    private var magenta = PorterDuffColorFilter(0xFFFF2BD6.toInt(), PorterDuff.Mode.SRC_IN)
+
+    @Volatile
+    private var cyan = PorterDuffColorFilter(0xFF2AF0FF.toInt(), PorterDuff.Mode.SRC_IN)
+
+    /** Muda as duas cores que se separam do corpo (a primeira vai para a esquerda, a segunda para a direita). */
+    fun setColors(a: Int, b: Int) {
+        magenta = PorterDuffColorFilter(a or 0xFF000000.toInt(), PorterDuff.Mode.SRC_IN)
+        cyan = PorterDuffColorFilter(b or 0xFF000000.toInt(), PorterDuff.Mode.SRC_IN)
+    }
 
     /**
      * Desenha bmp com o canto de cima em (x, y). g vai de 0 a 1 (força da falha), seed muda o desenho

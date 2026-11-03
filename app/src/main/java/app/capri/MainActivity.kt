@@ -42,6 +42,8 @@ class MainActivity : Activity() {
     private lateinit var toggleBtn: Button
     private lateinit var keyField: EditText
     private lateinit var modelField: EditText
+    private lateinit var voiceKeyField: EditText
+    private val natural by lazy { NaturalSpeaker(this, android.os.Handler(android.os.Looper.getMainLooper())) }
     private lateinit var preview: ImageView
     private lateinit var batteryStatus: TextView
     private lateinit var batteryBtn: Button
@@ -74,6 +76,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        natural.shutdown()
         tts?.stop()
         tts?.shutdown()
         tts = null
@@ -304,6 +307,7 @@ class MainActivity : Activity() {
             pushVoice()
         }
         col.addView(glitch)
+        addGlitchColors(col)
         col.addView(body("O corpo é um desenho simples feito de formas, para combinar com a imagem que você escolheu como rosto. Se a sua imagem já é o corpo inteiro, escolha \"Sem corpo\"."))
     }
 
@@ -430,7 +434,7 @@ class MainActivity : Activity() {
         val all = arrayOf(
             Move.WAVE, Move.DANCE, Move.DANCE2, Move.HOP, Move.SPIN, Move.STRETCH, Move.LEAN,
             Move.WALK, Move.SIT, Move.FLY, Move.CHEER, Move.SHRUG, Move.THINK, Move.LISTEN, Move.TALK,
-            Move.SASS, Move.LOOK, Move.GLITCH
+            Move.SASS, Move.LOOK, Move.GLITCH, Move.CURTSY, Move.PRESENT, Move.SWAY, Move.ROUTINE
         )
         poseIdx = (poseIdx + 1) % all.size
         bodyPreview.setPose(all[poseIdx], 3000L)
@@ -454,8 +458,147 @@ class MainActivity : Activity() {
         col.addView(body("A Acessibilidade é o que deixa a Capri apertar Voltar, abrir as notificações, tirar print, bloquear a tela, rolar, tocar em botões pelo nome e digitar. Ela só age quando você pede e não lê nem guarda o que aparece na tela. No Android 13 ou mais novo, apps instalados fora da Play Store vêm com isso bloqueado: se a opção aparecer em cinza, abra as informações do app, toque nos três pontinhos no canto de cima, escolha \"Permitir configurações restritas\" e depois ligue a Capri em Acessibilidade. Limites: nenhum app consegue \"qualquer coisa\". Apps de banco e telas protegidas bloqueiam esse acesso, o Android não deixa ligar Wi-Fi, dados, modo avião ou localização sozinho, e a Capri nunca aperta botões de pagar, comprar, transferir ou apagar conta. Mensagens ficam prontas para você tocar em enviar, e ligações abrem o discador."))
     }
 
+    private val glitchPalette = intArrayOf(
+        0xFFFF2BD6.toInt(), 0xFF2AF0FF.toInt(), 0xFF39FF14.toInt(), 0xFFFFE500.toInt(), 0xFFFF3B30.toInt(),
+        0xFF3D5AFE.toInt(), 0xFF9B5CFF.toInt(), 0xFFFF9500.toInt(), 0xFFFF6FB5.toInt(), 0xFFFFFFFF.toInt()
+    )
+
+    private fun chipBg(color: Int, selected: Boolean): GradientDrawable {
+        val g = GradientDrawable()
+        g.setColor(color)
+        g.cornerRadius = dp(10).toFloat()
+        g.setStroke(if (selected) dp(3) else dp(1), if (selected) 0xFFFFFFFF.toInt() else DIM)
+        return g
+    }
+
+    private fun setGlitchColor(which: Int, c: Int) {
+        if (which == 0) prefs.glitchColorA = c else prefs.glitchColorB = c
+        Glitch.setColors(prefs.glitchColorA, prefs.glitchColorB)
+        pushVoice()
+    }
+
+    private fun addGlitchColors(col: LinearLayout) {
+        Glitch.setColors(prefs.glitchColorA, prefs.glitchColorB)
+        col.addView(body("Cores do glitch: são as duas cores que se separam do corpo dela quando a imagem falha."))
+        for (which in 0..1) {
+            col.addView(body(if (which == 0) "Cor 1 (vai para a esquerda)" else "Cor 2 (vai para a direita)"))
+            val scroll = android.widget.HorizontalScrollView(this)
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            val chips = ArrayList<View>()
+            val hex = EditText(this)
+            fun cur(): Int = if (which == 0) prefs.glitchColorA else prefs.glitchColorB
+            fun refreshChips() {
+                for (i in chips.indices) chips[i].background = chipBg(glitchPalette[i], glitchPalette[i] == cur())
+            }
+            for (c in glitchPalette) {
+                val v = View(this)
+                v.setOnClickListener {
+                    setGlitchColor(which, c)
+                    hex.setText(String.format("#%06X", c and 0xFFFFFF))
+                    refreshChips()
+                }
+                row.addView(v, LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(8) })
+                chips.add(v)
+            }
+            refreshChips()
+            scroll.addView(row)
+            col.addView(scroll)
+            hex.hint = "Outra cor: #RRGGBB"
+            hex.setHintTextColor(DIM)
+            hex.setTextColor(INK)
+            hex.setSingleLine(true)
+            hex.setText(String.format("#%06X", cur() and 0xFFFFFF))
+            hex.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            hex.setOnEditorActionListener { _, _, _ ->
+                try {
+                    val c = android.graphics.Color.parseColor(hex.text.toString().trim())
+                    setGlitchColor(which, c or 0xFF000000.toInt())
+                    refreshChips()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Use o formato #RRGGBB, por exemplo #FF2BD6.", Toast.LENGTH_SHORT).show()
+                }
+                false
+            }
+            col.addView(hex)
+        }
+        col.addView(button("Ver o glitch com essas cores") { bodyPreview.glitchBurst(0.95f, 900L) })
+    }
+
+    private fun optionSpinner(labels: List<String>, selected: Int, onPick: (Int) -> Unit): Spinner {
+        val sp = Spinner(this)
+        sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        sp.setSelection(selected.coerceIn(0, labels.size - 1))
+        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                onPick(position)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        return sp
+    }
+
+    private fun addNaturalVoice(col: LinearLayout) {
+        col.addView(heading("Voz natural (mais humana)"))
+        col.addView(body("Usa a voz de IA do Gemini, bem mais expressiva e parecida com uma pessoa de verdade: tem emoção, risadinhas e pausas. Se falhar ou o limite acabar, a Capri volta sozinha para a voz do celular. Cada fala usa um pouco da sua cota do Gemini."))
+        val sw = Switch(this)
+        sw.text = "Usar a voz natural"
+        sw.setTextColor(INK)
+        sw.isChecked = prefs.naturalVoice
+        sw.setOnCheckedChangeListener { _, checked ->
+            prefs.naturalVoice = checked
+            pushVoice()
+        }
+        col.addView(sw)
+        col.addView(body("Voz"))
+        val names = GeminiTts.VOICES.map { it.second }
+        col.addView(optionSpinner(names, GeminiTts.VOICES.indexOfFirst { it.first == prefs.naturalVoiceName }) { i ->
+            prefs.naturalVoiceName = GeminiTts.VOICES[i].first
+        })
+        col.addView(body("Jeito de falar"))
+        col.addView(optionSpinner(GeminiTts.STYLES.map { it.first }, prefs.naturalStyle) { i ->
+            prefs.naturalStyle = i
+        })
+        col.addView(body("Chave do Gemini para a voz. Se a chave de cima já for do Google (AIza...), pode deixar em branco."))
+        voiceKeyField = EditText(this)
+        voiceKeyField.hint = "AIza... (só se a chave de cima for da Anthropic)"
+        voiceKeyField.setHintTextColor(DIM)
+        voiceKeyField.setTextColor(INK)
+        voiceKeyField.setSingleLine(true)
+        voiceKeyField.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        voiceKeyField.setText(prefs.voiceKey)
+        col.addView(voiceKeyField)
+        col.addView(button("Ouvir a voz natural") { testNatural() })
+    }
+
+    private fun testNatural() {
+        saveFields()
+        val key = prefs.naturalKey()
+        if (key.isEmpty()) {
+            Toast.makeText(this, "Cole uma chave do Gemini (AIza...) para usar a voz natural.", Toast.LENGTH_LONG).show()
+            return
+        }
+        tts?.stop()
+        val style = GeminiTts.STYLES[prefs.naturalStyle.coerceIn(0, GeminiTts.STYLES.size - 1)].second
+        Toast.makeText(this, "Gerando a voz...", Toast.LENGTH_SHORT).show()
+        natural.speak(
+            key, prefs.naturalVoiceName, style,
+            "Oi, choom! Eu sou a Capri. <short pause> Gostou da minha voz? Agora eu falo bem mais natural, hihi.",
+            {},
+            { why ->
+                Toast.makeText(
+                    this,
+                    "Não consegui gerar a voz natural (" + why.take(80) + "). Confira a chave do Gemini ou o limite grátis.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        )
+    }
+
     private fun addVoiceSection(col: LinearLayout) {
-        col.addView(heading("Voz da Capri"))
+        addNaturalVoice(col)
+        col.addView(heading("Voz do celular (reserva)"))
 
         col.addView(body("Mecanismo de voz"))
         engineSpinner = Spinner(this)
@@ -690,6 +833,7 @@ class MainActivity : Activity() {
     private fun saveFields() {
         prefs.apiKey = keyField.text.toString()
         prefs.model = modelField.text.toString()
+        if (this::voiceKeyField.isInitialized) prefs.voiceKey = voiceKeyField.text.toString()
     }
 
     private fun hasMic(): Boolean =

@@ -200,6 +200,53 @@ class Prefs(context: Context) {
             sp.edit().putBoolean("glitch", value).apply()
         }
 
+    /** As duas cores que se separam do corpo no glitch. */
+    var glitchColorA: Int
+        get() = sp.getInt("glitchColorA", 0xFFFF2BD6.toInt())
+        set(value) {
+            sp.edit().putInt("glitchColorA", value).apply()
+        }
+
+    var glitchColorB: Int
+        get() = sp.getInt("glitchColorB", 0xFF2AF0FF.toInt())
+        set(value) {
+            sp.edit().putInt("glitchColorB", value).apply()
+        }
+
+    /** Voz natural (Gemini): mais humana que a voz do celular. */
+    var naturalVoice: Boolean
+        get() = sp.getBoolean("naturalVoice", true)
+        set(value) {
+            sp.edit().putBoolean("naturalVoice", value).apply()
+        }
+
+    var naturalVoiceName: String
+        get() = sp.getString("naturalVoiceName", "Leda") ?: "Leda"
+        set(value) {
+            sp.edit().putString("naturalVoiceName", value).apply()
+        }
+
+    var naturalStyle: Int
+        get() = sp.getInt("naturalStyle", 0)
+        set(value) {
+            sp.edit().putInt("naturalStyle", value).apply()
+        }
+
+    /** Chave do Gemini só para a voz (quando a chave principal é de outro serviço). */
+    var voiceKey: String
+        get() = sp.getString("voiceKey", "") ?: ""
+        set(value) {
+            sp.edit().putString("voiceKey", value.trim()).apply()
+        }
+
+    /** A chave que vale para a voz natural: a própria, ou a principal se for do Google. Vazio = não tem. */
+    fun naturalKey(): String {
+        val v = voiceKey
+        if (v.isNotEmpty()) return v
+        val k = apiKey
+        return if (k.isNotEmpty() && !k.startsWith("sk-ant-")) k else ""
+    }
+
     var posX: Int
         get() = sp.getInt("posX", -1)
         set(value) {

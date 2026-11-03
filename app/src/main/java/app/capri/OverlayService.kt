@@ -125,6 +125,7 @@ class OverlayService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var natural: NaturalSpeaker? = null
     private val history = ArrayList<Pair<String, String>>()
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -172,6 +173,7 @@ class OverlayService : Service() {
                 resetActs()
             }
             ACTION_PREFS -> {
+                Glitch.setColors(prefs.glitchColorA, prefs.glitchColorB)
                 applyBody()
                 resetActs()
                 applyWakePref()
@@ -207,6 +209,8 @@ class OverlayService : Service() {
         tts?.stop()
         tts?.shutdown()
         tts = null
+        natural?.shutdown()
+        natural = null
         removeGhost()
         for (v in listOf<View?>(charRoot, bubbleRoot, if (inputAdded) inputRoot else null)) {
             if (v != null) {
@@ -407,6 +411,7 @@ class OverlayService : Service() {
         inputParams = ip
         input = et
         figure = img
+        Glitch.setColors(prefs.glitchColorA, prefs.glitchColorB)
         img.autoGlitch = prefs.glitch
         dot = d
 
@@ -1307,7 +1312,7 @@ class OverlayService : Service() {
 
     private fun startTurn(text: String, voice: Boolean) {
         stopListening()
-        tts?.stop()
+        stopSpeaking()
         val q = text.trim()
         if (q.isEmpty()) {
             startWake()
@@ -1318,7 +1323,7 @@ class OverlayService : Service() {
         if (cmd != null && cmd.kind == "HIDE") {
             hideNow()
             val line = Lines.hide(rnd)
-            if (prefs.speak && ttsReady) speak(line) else startWake()
+            if (canSpeak()) speak(line) else startWake()
             return
         }
         if (cmd != null) {
@@ -1348,7 +1353,7 @@ class OverlayService : Service() {
             return
         }
         val model = prefs.model
-        val system = Persona.system()
+        val system = Persona.system(naturalOn())
         val snapshot = ArrayList<Pair<String, String>>(history)
         val myTurn = ++turnId
         io.execute {
@@ -1437,13 +1442,30 @@ class OverlayService : Service() {
     }
 
     private fun finishTurn(text: String, speakIt: Boolean) {
-        say(text, false)
-        if (speakIt && prefs.speak && ttsReady) {
+        val shown = stripVoiceTags(text)
+        say(shown, false)
+        if (speakIt && canSpeak()) {
             speak(text)
         } else {
             startWake()
-            scheduleAutoHide((4000L + text.length * 45L).coerceAtMost(15000L))
+            scheduleAutoHide((4000L + shown.length * 45L).coerceAtMost(15000L))
         }
+    }
+
+    private val voiceTag = Regex("<[^>]{1,24}>")
+
+    /** Tira as marcas de voz (<laugh> e parecidas) do que aparece na tela. */
+    private fun stripVoiceTags(s: String): String =
+        s.replace(voiceTag, "").replace(Regex("[ \\t]{2,}"), " ").trim()
+
+    /** Voz natural ligada e com chave que sirva. */
+    private fun naturalOn(): Boolean = prefs.naturalVoice && prefs.naturalKey().isNotEmpty()
+
+    private fun canSpeak(): Boolean = prefs.speak && (ttsReady || naturalOn())
+
+    private fun stopSpeaking() {
+        tts?.stop()
+        natural?.stop()
     }
 
     // ---------- falas soltas ----------
@@ -1533,9 +1555,33 @@ class OverlayService : Service() {
     private fun speak(text: String) {
         state = State.SPEAKING
         setDot(HOT)
-        val clean = text.replace(Regex("[*_`#>]+"), " ")
+        val plain = stripVoiceTags(text).replace(Regex("[*_`#>]+"), " ")
+        if (naturalOn()) {
+            var n = natural
+            if (n == null) {
+                n = NaturalSpeaker(this, main)
+                natural = n
+            }
+            val styles = GeminiTts.STYLES
+            val style = styles[prefs.naturalStyle.coerceIn(0, styles.size - 1)].second
+            // a voz natural recebe as marcas (<laugh>, <short pause>); só tiramos o que é formatação
+            val spoken = text.replace(Regex("[*_`#]+"), " ")
+            n.speak(
+                prefs.naturalKey(), prefs.naturalVoiceName, style, spoken,
+                { afterSpeak() },
+                { _ ->
+                    // não deu para gerar a voz natural: usa a voz do celular
+                    if (state == State.SPEAKING) speakDevice(plain)
+                }
+            )
+            return
+        }
+        speakDevice(plain)
+    }
+
+    private fun speakDevice(clean: String) {
         val t = tts
-        if (t == null) {
+        if (t == null || !ttsReady) {
             afterSpeak()
             return
         }

@@ -7,7 +7,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Esqueleto 2D: 18 juntas colocadas pela pessoa sobre a imagem do corpo, 13 ossos,
+ * Esqueleto 2D: 19 juntas colocadas pela pessoa sobre a imagem do corpo, 14 ossos,
  * pesos para dobrar a imagem junto com os ossos e a matemática de cada pose.
  * Não depende do Android, para poder ser testado no computador.
  *
@@ -34,14 +34,16 @@ object Rig {
     const val KNEE_R = 15
     const val ANK_R = 16
     const val TOE_R = 17
-    const val JOINTS = 18
+    const val WAIST = 18
+    const val JOINTS = 19
 
     val NAMES = arrayOf(
         "Pescoço (onde o rosto se apoia)", "Quadril (centro do corpo)",
         "Ombro E", "Cotovelo E", "Pulso E", "Ponta da mão E",
         "Ombro D", "Cotovelo D", "Pulso D", "Ponta da mão D",
         "Quadril E (onde a perna começa)", "Joelho E", "Tornozelo E", "Ponta do pé E",
-        "Quadril D (onde a perna começa)", "Joelho D", "Tornozelo D", "Ponta do pé D"
+        "Quadril D (onde a perna começa)", "Joelho D", "Tornozelo D", "Ponta do pé D",
+        "Cintura (meio da coluna, onde o corpo dobra)"
     )
 
     const val B_TORSO = 0
@@ -57,11 +59,12 @@ object Rig {
     const val B_TH_R = 10
     const val B_SH_R = 11
     const val B_FT_R = 12
-    const val BONES = 13
+    const val B_CHEST = 13
+    const val BONES = 14
 
     /** Cada osso vai da junta A até a junta B. */
-    val BONE_A = intArrayOf(PELVIS, SHO_L, ELB_L, WRI_L, SHO_R, ELB_R, WRI_R, HIP_L, KNEE_L, ANK_L, HIP_R, KNEE_R, ANK_R)
-    val BONE_B = intArrayOf(NECK, ELB_L, WRI_L, HAND_L, ELB_R, WRI_R, HAND_R, KNEE_L, ANK_L, TOE_L, KNEE_R, ANK_R, TOE_R)
+    val BONE_A = intArrayOf(PELVIS, SHO_L, ELB_L, WRI_L, SHO_R, ELB_R, WRI_R, HIP_L, KNEE_L, ANK_L, HIP_R, KNEE_R, ANK_R, WAIST)
+    val BONE_B = intArrayOf(WAIST, ELB_L, WRI_L, HAND_L, ELB_R, WRI_R, HAND_R, KNEE_L, ANK_L, TOE_L, KNEE_R, ANK_R, TOE_R, NECK)
 
     /** Posições iniciais (frações de largura e altura da imagem) a partir da caixa onde está o corpo. */
     fun defaults(x0: Float, y0: Float, x1: Float, y1: Float): FloatArray {
@@ -79,6 +82,7 @@ object Rig {
         put(SHO_R, 0.12f, 0.12f); put(ELB_R, 0.20f, 0.30f); put(WRI_R, 0.24f, 0.46f); put(HAND_R, 0.26f, 0.54f)
         put(HIP_L, -0.07f, 0.52f); put(KNEE_L, -0.08f, 0.74f); put(ANK_L, -0.09f, 0.93f); put(TOE_L, -0.10f, 0.99f)
         put(HIP_R, 0.07f, 0.52f); put(KNEE_R, 0.08f, 0.74f); put(ANK_R, 0.09f, 0.93f); put(TOE_R, 0.10f, 0.99f)
+        put(WAIST, 0f, 0.30f)
         return j
     }
 
@@ -87,9 +91,14 @@ object Rig {
     fun decode(s: String): FloatArray? {
         if (s.isBlank()) return null
         val parts = s.split(",")
-        if (parts.size != JOINTS * 2) return null
+        // versões antigas guardavam 18 juntas (36 números): a cintura nova vai no meio entre quadril e pescoço
+        if (parts.size != JOINTS * 2 && parts.size != (JOINTS - 1) * 2) return null
         val out = FloatArray(JOINTS * 2)
         for (i in parts.indices) out[i] = parts[i].trim().toFloatOrNull() ?: return null
+        if (parts.size == (JOINTS - 1) * 2) {
+            out[WAIST * 2] = out[PELVIS * 2] + 0.5f * (out[NECK * 2] - out[PELVIS * 2])
+            out[WAIST * 2 + 1] = out[PELVIS * 2 + 1] + 0.5f * (out[NECK * 2 + 1] - out[PELVIS * 2 + 1])
+        }
         return out
     }
 
@@ -150,6 +159,7 @@ object Rig {
         val torso = FloatArray(6)
         val chain = FloatArray(6)
         val chain2 = FloatArray(6)
+        val armBase = FloatArray(6)
         fun jx(i: Int) = j[i * 2]
         fun jy(i: Int) = j[i * 2 + 1]
 
@@ -161,14 +171,20 @@ object Rig {
         translate(p.dx * frameH, p.dy * frameH, t1)
         mul(t1, root, root)
 
-        // tronco
+        // parte de baixo do tronco: gira em volta do quadril
         rotAbout(p.tor, jx(PELVIS), jy(PELVIS), t1)
         mul(root, t1, torso)
         System.arraycopy(torso, 0, bones, B_TORSO * 6, 6)
 
+        // peito: dobra na cintura em cima do resto do tronco (ombros, braços e cabeça vão com ele)
+        val chest = FloatArray(6)
+        rotAbout(p.chest, jx(WAIST), jy(WAIST), t1)
+        mul(torso, t1, chest)
+        System.arraycopy(chest, 0, bones, B_CHEST * 6, 6)
+
         // cabeça (rosto e cabelo)
         rotAbout(p.head, jx(NECK), jy(NECK), t1)
-        mul(torso, t1, head)
+        mul(chest, t1, head)
 
         val sgn = floatArrayOf(1f, -1f)
         for (s in 0..1) {
@@ -176,8 +192,11 @@ object Rig {
             val elb = if (s == 0) ELB_L else ELB_R
             val wri = if (s == 0) WRI_L else WRI_R
             val bu = if (s == 0) B_UA_L else B_UA_R
+            // ombro: pode subir (encolher) além de acompanhar o peito
+            translate(0f, -p.shr[s] * frameH, t2)
+            mul(chest, t2, armBase)
             rotAbout(sgn[s] * p.ua[s], jx(sho), jy(sho), t1)
-            mul(torso, t1, chain)
+            mul(armBase, t1, chain)
             System.arraycopy(chain, 0, bones, bu * 6, 6)
             rotAbout(sgn[s] * p.fa[s], jx(elb), jy(elb), t1)
             mul(chain, t1, chain2)
@@ -236,11 +255,11 @@ object Rig {
     }
 
     /** O osso de onde cada osso se pendura (o torso não tem pai). */
-    val PARENT = intArrayOf(-1, B_TORSO, B_UA_L, B_FA_L, B_TORSO, B_UA_R, B_FA_R, B_TORSO, B_TH_L, B_SH_L, B_TORSO, B_TH_R, B_SH_R)
+    val PARENT = intArrayOf(-1, B_CHEST, B_UA_L, B_FA_L, B_CHEST, B_UA_R, B_FA_R, B_TORSO, B_TH_L, B_SH_L, B_TORSO, B_TH_R, B_SH_R, B_TORSO)
 
     /** Ordem de desenho: de trás para a frente (pernas, torso, braços). */
     val DRAW_ORDER = intArrayOf(
-        B_TH_L, B_SH_L, B_FT_L, B_TH_R, B_SH_R, B_FT_R, B_TORSO,
+        B_TH_L, B_SH_L, B_FT_L, B_TH_R, B_SH_R, B_FT_R, B_TORSO, B_CHEST,
         B_UA_L, B_FA_L, B_HA_L, B_UA_R, B_FA_R, B_HA_R
     )
 
@@ -279,7 +298,8 @@ object Rig {
             }
             val nx = -(by - ay) / len
             val ny = (bx - ax) / len
-            val maxD = if (b == B_TORSO) 0.5f * shoulders + 0.05f * bh else min(0.5f * len, 0.2f * bh)
+            val torsoLike = b == B_TORSO || b == B_CHEST
+            val maxD = if (torsoLike) 0.5f * shoulders + 0.05f * bh else min(0.5f * len, 0.2f * bh)
             val vals = ArrayList<Float>()
             for (k in 0..10) {
                 val t = 0.1f + 0.08f * k
@@ -294,7 +314,7 @@ object Rig {
             }
             vals.sort()
             var rr = if (vals.isEmpty()) 0.05f * bh else vals[vals.size / 2]
-            val hi = if (b == B_TORSO) 0.65f * shoulders else 0.4f * len
+            val hi = if (torsoLike) 0.65f * shoulders else 0.4f * len
             rr = min(rr, max(minR, hi))
             r[b] = max(rr, minR)
         }
@@ -584,6 +604,42 @@ object Rig {
         put(NECK, neckX, y0 + 0.02f * bh)
         put(PELVIS, (j[HIP_L * 2] + j[HIP_R * 2]) / 2f, pelvisY)
 
+        // ---- cintura: a linha mais fina do tronco entre o peito e o quadril
+        run {
+            val ya = (y0 + 0.28f * bh).toInt()
+            val yb = (pelvisY - 0.06f * bh).toInt()
+            var bestY = -1
+            var bestW = Int.MAX_VALUE
+            var bestX = 0f
+            val px0 = j[PELVIS * 2]
+            for (y in ya..yb) {
+                val rr = runs(y, x0, x1, minRun)
+                var pick: IntArray? = null
+                var bd = Float.MAX_VALUE
+                for (q in rr) {
+                    val c = (q[0] + q[1]) / 2f
+                    val d = Math.abs(c - (neckX + px0) / 2f)
+                    if (d < bd) {
+                        bd = d
+                        pick = q
+                    }
+                }
+                if (pick != null) {
+                    val wd = pick[1] - pick[0]
+                    if (wd < bestW) {
+                        bestW = wd
+                        bestY = y
+                        bestX = (pick[0] + pick[1] + 1) / 2f
+                    }
+                }
+            }
+            if (bestY >= 0) {
+                put(WAIST, (bestX + (neckX + px0) / 2f) / 2f, bestY.toFloat())
+            } else {
+                put(WAIST, (neckX + px0) / 2f, (y0 + 0.02f * bh + pelvisY) / 2f)
+            }
+        }
+
         // ---- braços: a ponta de cada um é o ponto mais baixo nas colunas de fora, acima da virilha
         val shY = y0 + 0.08f * bh
         for (side in 0..1) {
@@ -657,13 +713,19 @@ class RigPose {
     val sh = FloatArray(2)
     val ft = FloatArray(2)
 
+    /** Dobra do peito na cintura, em cima do giro do tronco (positivo = para a direita). */
+    var chest = 0f
+
+    /** Ombros subindo (encolher), em fração da altura do quadro. */
+    val shr = FloatArray(2)
+
     /** Quanto a coxa e a canela aparecem encurtadas (1 = inteiras). Serve para levantar o pé e sentar. */
     val thS = floatArrayOf(1f, 1f)
     val shS = floatArrayOf(1f, 1f)
 
     fun reset() {
-        dx = 0f; dy = 0f; rot = 0f; sx = 1f; sy = 1f; tor = 0f; head = 0f
-        for (a in arrayOf(ua, fa, ha, th, sh, ft)) {
+        dx = 0f; dy = 0f; rot = 0f; sx = 1f; sy = 1f; tor = 0f; head = 0f; chest = 0f
+        for (a in arrayOf(ua, fa, ha, th, sh, ft, shr)) {
             a[0] = 0f
             a[1] = 0f
         }
@@ -672,12 +734,18 @@ class RigPose {
     }
 
     fun copyFrom(o: RigPose) {
-        dx = o.dx; dy = o.dy; rot = o.rot; sx = o.sx; sy = o.sy; tor = o.tor; head = o.head
+        dx = o.dx; dy = o.dy; rot = o.rot; sx = o.sx; sy = o.sy; tor = o.tor; head = o.head; chest = o.chest
         for (k in 0..1) {
+            shr[k] = o.shr[k]
             ua[k] = o.ua[k]; fa[k] = o.fa[k]; ha[k] = o.ha[k]
             th[k] = o.th[k]; sh[k] = o.sh[k]; ft[k] = o.ft[k]
             thS[k] = o.thS[k]; shS[k] = o.shS[k]
         }
+    }
+
+    /** this = this + (o - this) * k */
+    fun mixWith(o: RigPose, k: Float) {
+        mix(this, o, k)
     }
 
     /** this = a + (b - a) * k */
@@ -685,7 +753,9 @@ class RigPose {
         fun l(x: Float, y: Float) = x + (y - x) * k
         dx = l(a.dx, b.dx); dy = l(a.dy, b.dy); rot = l(a.rot, b.rot)
         sx = l(a.sx, b.sx); sy = l(a.sy, b.sy); tor = l(a.tor, b.tor); head = l(a.head, b.head)
+        chest = l(a.chest, b.chest)
         for (i in 0..1) {
+            shr[i] = l(a.shr[i], b.shr[i])
             ua[i] = l(a.ua[i], b.ua[i]); fa[i] = l(a.fa[i], b.fa[i]); ha[i] = l(a.ha[i], b.ha[i])
             th[i] = l(a.th[i], b.th[i]); sh[i] = l(a.sh[i], b.sh[i]); ft[i] = l(a.ft[i], b.ft[i])
             thS[i] = l(a.thS[i], b.thS[i]); shS[i] = l(a.shS[i], b.shS[i])
