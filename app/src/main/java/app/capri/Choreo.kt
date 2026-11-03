@@ -104,6 +104,25 @@ object Choreo {
 
     private fun smooth(k: Float): Float = k * k * (3f - 2f * k)
 
+    /** Integral de uma rampa suave (0 a 1 em a) até x. */
+    private fun ramp(x: Float, a: Float): Float {
+        val y = min(1f, max(0f, x / a))
+        return a * (y * y * y - 0.5f * y * y * y * y)
+    }
+
+    /**
+     * Distorce o tempo de uma volta: começa devagar, anda em velocidade constante e termina devagar,
+     * sem mudar o ponto final (0 vira 0 e 1 vira 1).
+     */
+    fun warp(k: Float): Float {
+        val a = 0.15f
+        val x = min(1f, max(0f, k))
+        val w = if (x < a) ramp(x, a)
+        else if (x <= 1f - a) 0.5f * a + (x - a)
+        else (1f - 1.5f * a) + (0.5f * a - ramp(1f - x, a))
+        return w / (1f - a)
+    }
+
     /**
      * Um trecho da coreografia: faz [move] por [durMs] indo de [from] para [to].
      * Se loop for verdadeiro, em vez disso ela gira em volta de um centro.
@@ -127,7 +146,7 @@ object Choreo {
         fun pos(k0: Float, e: Env, o: FloatArray) {
             val k = min(1f, max(0f, k0))
             if (freeLoop) {
-                val th = (2.0 * PI * k).toFloat() - (PI / 2.0).toFloat()
+                val th = (2.0 * PI * warp(k)).toFloat() - (PI / 2.0).toFloat()
                 val x = loopCx + loopRx * cos(th) - e.figW / 2f
                 val y = loopCy + loopRy * (1f + sin(th)) / 1f - e.figH / 2f - loopRy
                 o[0] = e.clampX(x)
@@ -135,7 +154,7 @@ object Choreo {
                 return
             }
             if (orbitTurns != 0f && from is Anchor.Orbit && e.hasInput) {
-                val th = from.theta + (2.0 * PI * orbitTurns * k).toFloat()
+                val th = from.theta + (2.0 * PI * orbitTurns * warp(k)).toFloat()
                 resolve(Anchor.Orbit(th), e, o)
                 return
             }
@@ -206,7 +225,7 @@ object Choreo {
             val dy = abs(a[1] - b[1])
             if (d <= e.figW * 1.6f && dy < 0.3f * e.figH) {
                 val ms = max(500L, (d / (70f * e.density) * 1000f).toLong())
-                out.add(Act(Move.WALK, ms, cur, to))
+                out.add(Act(Move.WALK, ms, cur, to, ease = true))
             } else {
                 val ms = max(800L, (d / (230f * e.density) * 1000f).toLong())
                 out.add(Act(Move.FLY, ms, cur, to, ease = true))
@@ -244,7 +263,7 @@ object Choreo {
                         out.add(hold(Move.IDLE, 1500L, cur))
                     } else {
                         val ms = max(600L, (d / (70f * e.density) * 1000f).toLong())
-                        out.add(Act(Move.WALK, ms, cur, Anchor.Abs(tx, here[1])))
+                        out.add(Act(Move.WALK, ms, cur, Anchor.Abs(tx, here[1]), ease = true))
                         if (moves && rnd.nextBoolean()) {
                             val g = gesture()
                             out.add(hold(g, gestureMs(g), Anchor.Abs(tx, here[1])))
@@ -295,7 +314,7 @@ object Choreo {
                     val s = Anchor.Edge(u0, false)
                     transit(e, cur, s, out)
                     val ms = max(700L, (abs(u1 - u0) * boxW / (70f * e.density) * 1000f).toLong())
-                    out.add(Act(Move.WALK, ms, s, Anchor.Edge(u1, false)))
+                    out.add(Act(Move.WALK, ms, s, Anchor.Edge(u1, false), ease = true))
                 }
                 1 -> {
                     val u = if (wander) 0.1f + rnd.nextFloat() * 0.8f else u0

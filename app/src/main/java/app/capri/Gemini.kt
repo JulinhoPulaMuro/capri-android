@@ -15,26 +15,44 @@ object Gemini {
         apiKey: String,
         preferred: String,
         system: String,
-        history: List<Pair<String, String>>
+        history: List<Pair<String, String>>,
+        onStatus: ((String) -> Unit)? = null
     ): String {
         val order = ArrayList<String>()
         if (preferred.startsWith("gemini")) order.add(preferred)
         for (m in MODELS) {
             if (!order.contains(m)) order.add(m)
         }
-        var last: ClaudeException? = null
+        var last: Exception? = null
+        val start = System.currentTimeMillis()
         for (m in order) {
-            try {
-                return one(apiKey, m, system, history)
-            } catch (e: ClaudeException) {
-                if (e.code == "http_404" || e.code == "http_429") {
+            if (last != null && System.currentTimeMillis() - start > 70000L) break
+            for (attempt in 1..2) {
+                try {
+                    return one(apiKey, m, system, history)
+                } catch (e: ClaudeException) {
+                    if (e.code == "http_404" || e.code == "http_429") {
+                        last = e
+                        break
+                    } else if (Net.retryable(e)) {
+                        last = e
+                        if (attempt == 1) {
+                            onStatus?.invoke("O servidor está ocupado, tentando de novo...")
+                            Net.sleep(Net.delayFor(1, e))
+                        }
+                    } else {
+                        throw e
+                    }
+                } catch (e: java.io.IOException) {
                     last = e
-                } else {
-                    throw e
+                    if (attempt == 1) Net.sleep(1500L)
                 }
             }
         }
-        throw last ?: ClaudeException("empty", "nenhum modelo respondeu")
+        val l = last
+        if (l is ClaudeException) throw l
+        if (l is java.io.IOException) throw l
+        throw ClaudeException("empty", "nenhum modelo respondeu")
     }
 
     private fun one(
@@ -67,7 +85,7 @@ object Gemini {
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 15000
-            conn.readTimeout = 60000
+            conn.readTimeout = 45000
             conn.doOutput = true
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("x-goog-api-key", apiKey)

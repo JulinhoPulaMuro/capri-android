@@ -16,6 +16,7 @@ import java.io.File
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -43,9 +44,11 @@ class BodyView(context: Context) : View(context) {
     private var rr: RigRenderer? = null
     private val rigPose = RigPose()
     private val mixPose = RigPose()
-    private val prevPose = RigPose()
-    private val lastShown = RigPose()
-    private var blendStart = 0L
+    private val altPose = RigPose()
+    private val shownPose = RigPose()
+    private val smoother = PoseSmoother()
+    private var walkPhase = 0f
+    private var speedShown = 0f
     private var hairAng = 0f
     private var hairVel = 0f
     private var lastDraw = 0L
@@ -164,6 +167,13 @@ class BodyView(context: Context) : View(context) {
     var lean = 0f
     private var leanShown = 0f
 
+    /** Velocidade no chão em px/s enquanto anda (o passo acompanha). Negativo: não sei, anda no ritmo normal. */
+    var speed = -1f
+
+    /** Pedacinho de pixel que a janela não consegue mostrar: a figura é desenhada deslocada por isso. */
+    var subX = 0f
+    var subY = 0f
+
     /** Empurrão no cabelo quando a janela se mexe: dx em pixels por quadro. */
     fun kick(dx: Float) {
         hairVel -= dx * 0.07f
@@ -203,9 +213,9 @@ class BodyView(context: Context) : View(context) {
     }
 
     fun setPose(p: Move, durationMs: Long = 0L) {
-        if (p != pose) {
-            prevPose.copyFrom(lastShown)
-            blendStart = SystemClock.uptimeMillis()
+        if (p == Move.WALK && pose != Move.WALK) {
+            walkPhase = 0f
+            speedShown = 0f
         }
         pose = p
         poseStart = SystemClock.uptimeMillis()
@@ -334,7 +344,7 @@ class BodyView(context: Context) : View(context) {
         val type = effType()
         if (type == 5) {
             drawRig(canvas, now, t, w, h)
-            postInvalidateDelayed(33)
+            postInvalidateDelayed(16)
             return
         }
         val s = St()
@@ -368,27 +378,43 @@ class BodyView(context: Context) : View(context) {
 
     private fun drawRig(canvas: Canvas, now: Long, t: Float, w: Float, h: Float) {
         val r = rr ?: return
-        Anim.pose(pose, t, rigPose)
-        val k0 = min(1f, (now - blendStart) / 260f)
-        val k = k0 * k0 * (3f - 2f * k0)
-        if (k >= 1f) mixPose.copyFrom(rigPose) else mixPose.mix(prevPose, rigPose, k)
-        lastShown.copyFrom(mixPose)
+        val dt = if (lastDraw == 0L) 0.016f else min(0.05f, (now - lastDraw) / 1000f)
+        lastDraw = now
+        val dp = resources.displayMetrics.density
+
+        if (pose == Move.WALK) {
+            // o passo acompanha a velocidade no chão; quase parada, ela fica em pé em vez de pisar no lugar
+            val ref = 70f * dp
+            val sp = if (speed < 0f) ref else speed
+            speedShown += (sp - speedShown) * (1f - exp(-12f * dt))
+            val rate = min(1.6f, speedShown / ref)
+            walkPhase += dt * rate
+            Anim.pose(Move.WALK, walkPhase, altPose)
+            Anim.pose(Move.IDLE, t, mixPose)
+            rigPose.mix(mixPose, altPose, Anim.sstep((rate - 0.05f) / 0.3f))
+        } else {
+            Anim.pose(pose, t, rigPose)
+        }
+        // molas: começa e para suave, e as pontas chegam um pouco depois (também faz a troca de movimento)
+        smoother.step(rigPose, dt, shownPose)
+
         // inclina para o lado em que ela anda, de forma suave
-        leanShown += (lean - leanShown) * 0.2f
-        mixPose.rot += leanShown
+        leanShown += (lean - leanShown) * (1f - exp(-6.8f * dt))
+        shownPose.rot += leanShown
 
         // o cabelo é uma mola: balança atrás da cabeça
-        val dt = if (lastDraw == 0L) 0.033f else min(0.05f, (now - lastDraw) / 1000f)
-        lastDraw = now
-        val target = -0.5f * mixPose.head - 0.3f * mixPose.tor
+        val target = -0.5f * shownPose.head - 0.3f * shownPose.tor
         hairVel += ((target - hairAng) * 60f - hairVel * 5f) * dt
         hairAng += hairVel * dt
         hairAng = hairAng.coerceIn(-0.6f, 0.6f)
 
+        canvas.save()
+        canvas.translate(subX, subY)
         r.draw(
-            canvas, w, h, mixPose, hairAng, head, headW, headH, cutout,
+            canvas, w, h, shownPose, hairAng, head, headW, headH, cutout,
             faceX, faceY, faceW, rect, clip
         )
+        canvas.restore()
     }
 
     /** Na imagem inteira só dá para mexer a figura toda, então reforça alguns gestos. */

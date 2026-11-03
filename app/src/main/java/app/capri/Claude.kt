@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-class ClaudeException(val code: String, message: String) : Exception(message)
+class ClaudeException(val code: String, message: String, val retryAfterMs: Long = 0L) : Exception(message)
 
 /** Chamada direta à API de mensagens da Anthropic. Roda fora da thread principal. */
 object Claude {
@@ -30,7 +30,7 @@ object Claude {
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 15000
-            conn.readTimeout = 60000
+            conn.readTimeout = 45000
             conn.doOutput = true
             conn.setRequestProperty("content-type", "application/json")
             conn.setRequestProperty("x-api-key", apiKey)
@@ -47,7 +47,9 @@ object Claude {
                 } catch (e: Exception) {
                     // mantém o texto bruto
                 }
-                throw ClaudeException("http_$status", msg)
+                val ra = (conn.getHeaderField("retry-after") ?: "").trim().toDoubleOrNull()
+                val raMs = if (ra != null && ra > 0.0) (ra * 1000.0).toLong() else 0L
+                throw ClaudeException("http_$status", msg, raMs)
             }
 
             val content = JSONObject(raw).optJSONArray("content")

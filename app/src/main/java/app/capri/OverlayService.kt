@@ -103,6 +103,7 @@ class OverlayService : Service() {
     private var actIdx = 0
     private var actStart = 0L
     private var lastTick = 0L
+    private var lastDtMs = 16L
     private var dragging = false
     private var touching = false
     private val tmp2 = FloatArray(2)
@@ -115,6 +116,8 @@ class OverlayService : Service() {
 
     private var state = State.OFF
     private var voiceTurn = false
+    private var lastTyped = ""
+    private var turnId = 0
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -563,10 +566,13 @@ class OverlayService : Service() {
             curY = tmp2[1]
         }
         val vx = curX - px
-        f.kick(vx.coerceIn(-14f, 14f))
-        // inclina um pouco para o lado em que ela vai (voando mais, andando menos)
-        val leanK = if (a.move == Move.FLY) 0.012f else 0.006f
-        f.lean = (vx * leanK).coerceIn(-0.22f, 0.22f)
+        f.kick(vx.coerceIn(-8f, 8f))
+        // velocidade em pixels por segundo: inclina para o lado em que ela vai (voando mais, andando menos)
+        // e faz o passo acompanhar o chão
+        val vps = vx * 1000f / maxOf(8L, lastDtMs).toFloat()
+        val leanK = if (a.move == Move.FLY) 0.0004f else 0.0002f
+        f.lean = (vps * leanK).coerceIn(-0.22f, 0.22f)
+        f.speed = if (a.move == Move.WALK) Math.abs(vps) else -1f
     }
 
     /** Se ela estava sentada na caixa e vai falar ou pensar, levanta antes. */
@@ -581,6 +587,7 @@ class OverlayService : Service() {
         val now = SystemClock.uptimeMillis()
         val dtMs = now - lastTick
         lastTick = now
+        lastDtMs = dtMs
         val cr = charRoot
         val visible = cr != null && cr.visibility == View.VISIBLE && charAttached
         if (visible) {
@@ -603,7 +610,7 @@ class OverlayService : Service() {
             applyCharPos()
             positionBubble()
         }
-        main.postDelayed(tickRunnable, if (visible) 33L else 250L)
+        main.postDelayed(tickRunnable, if (visible) 16L else 250L)
     }
 
     private fun applyCharPos() {
@@ -611,6 +618,12 @@ class OverlayService : Service() {
         val cp = charParams ?: return
         val xi = curX.toInt()
         val yi = curY.toInt()
+        // o que a janela não mostra (menos de 1 pixel) a figura desenha por dentro: movimento mais liso
+        val fg = figure
+        if (fg != null) {
+            fg.subX = curX - xi
+            fg.subY = curY - yi
+        }
         if (xi != cp.x || yi != cp.y) {
             cp.x = xi
             cp.y = yi
@@ -1212,6 +1225,7 @@ class OverlayService : Service() {
         val t = et.text.toString().trim()
         if (t.isEmpty() || state == State.THINKING) return
         et.setText("")
+        lastTyped = t
         startTurn(t, false)
     }
 
@@ -1247,7 +1261,8 @@ class OverlayService : Service() {
         }
         state = State.THINKING
         setDot(AMBER)
-        say("Você: " + q + "\n…", true)
+        val shown = if (q.length > 160) q.take(160) + "..." else q
+        say("Você: " + shown + "\n…", true)
         history.add(Pair("user", q))
         trimHistory()
 
@@ -1259,9 +1274,14 @@ class OverlayService : Service() {
         val model = prefs.model
         val system = Persona.system()
         val snapshot = ArrayList<Pair<String, String>>(history)
+        val myTurn = ++turnId
         io.execute {
             val res: Pair<Boolean, String> = try {
-                Pair(true, Ai.ask(key, model, system, snapshot))
+                Pair(true, Ai.ask(key, model, system, snapshot) { msg ->
+                    main.post {
+                        if (!dead && myTurn == turnId && state == State.THINKING) say(msg, true)
+                    }
+                })
             } catch (e: ClaudeException) {
                 Pair(false, errorText(e))
             } catch (e: IOException) {
@@ -1288,8 +1308,9 @@ class OverlayService : Service() {
             "http_401" -> "A chave da API foi recusada. Confira no app da Capri."
             "http_403" -> "Essa chave não tem permissão para usar este modelo."
             "http_404" -> "Modelo não encontrado. Ajuste o modelo no app da Capri."
-            "http_429" -> "Limite grátis atingido por agora. Espere um minuto ou tente amanhã."
-            "http_529", "http_503" -> "O serviço está sobrecarregado. Tente de novo em instantes."
+            "http_429" -> "Limite de uso atingido por agora. Espere um minuto e mande de novo."
+            "http_529", "http_503", "http_500", "http_502", "http_504" ->
+                "Tentei algumas vezes e o servidor da IA continua ocupado. Sua mensagem voltou para a caixa: é só enviar de novo daqui a pouco."
             "empty" -> "A resposta veio vazia. Tente de novo."
             else -> "Erro " + e.code.removePrefix("http_") + ": " + m.take(160)
         }
@@ -1300,6 +1321,12 @@ class OverlayService : Service() {
         if (!ok) {
             if (history.isNotEmpty() && history[history.size - 1].first == "user") {
                 history.removeAt(history.size - 1)
+            }
+            // devolve o que foi digitado para a caixa, para não precisar escrever tudo de novo
+            val et = input
+            if (et != null && expanded && lastTyped.isNotEmpty() && et.text.isEmpty()) {
+                et.setText(lastTyped)
+                et.setSelection(et.text.length)
             }
         } else {
             history.add(Pair("assistant", text))
@@ -1371,6 +1398,11 @@ class OverlayService : Service() {
 
     private fun trimHistory() {
         while (history.size > 16) history.removeAt(0)
+        // mensagens muito longas ficam só com o começo, para o pedido não pesar
+        for (i in 0 until history.size - 1) {
+            val m = history[i]
+            if (m.second.length > 1200) history[i] = Pair(m.first, m.second.take(1200) + "...")
+        }
         while (history.isNotEmpty() && history[0].first != "user") history.removeAt(0)
     }
 
