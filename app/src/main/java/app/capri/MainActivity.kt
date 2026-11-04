@@ -43,6 +43,10 @@ class MainActivity : Activity() {
     private lateinit var keyField: EditText
     private lateinit var modelField: EditText
     private lateinit var voiceKeyField: EditText
+    private lateinit var styleField: EditText
+    private lateinit var voiceStatus: TextView
+    private lateinit var naturalSpinner: Spinner
+    private var naturalEntries: List<Pair<String, String>> = emptyList()
     private val natural by lazy { NaturalSpeaker(this, android.os.Handler(android.os.Looper.getMainLooper())) }
     private lateinit var preview: ImageView
     private lateinit var batteryStatus: TextView
@@ -539,6 +543,67 @@ class MainActivity : Activity() {
         return sp
     }
 
+    /** Título com o valor atual e uma barra. Devolve a linha pronta para pôr na tela. */
+    private fun labeledSeek(title: String, min: Float, max: Float, value: Float, onChange: (Float) -> Unit): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val label = body("")
+        fun show(v: Float) {
+            label.text = title + ": " + String.format(java.util.Locale.US, "%.2f", v) + "x"
+        }
+        show(value)
+        box.addView(label)
+        val sb = SeekBar(this)
+        sb.max = 100
+        sb.progress = (((value - min) / (max - min)) * 100f).toInt().coerceIn(0, 100)
+        sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, p: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val v = min + (max - min) * p / 100f
+                    show(v)
+                    onChange(v)
+                }
+            }
+
+            override fun onStartTrackingTouch(bar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(bar: SeekBar?) {
+                pushVoice()
+            }
+        })
+        box.addView(sb)
+        return box
+    }
+
+    /** Vozes da lista: as 30 prontas e as da biblioteca já baixadas, com o filtro de feminina. */
+    private fun buildNaturalEntries(): List<Pair<String, String>> {
+        val onlyF = prefs.naturalFemale
+        val out = ArrayList<Pair<String, String>>()
+        for (v in GeminiTts.VOICES) if (!onlyF || v.female) out.add(Pair(v.id, v.label))
+        for (v in GeminiTts.decodeLib(prefs.libVoices)) if (!onlyF || v.female) out.add(Pair(v.id, "Biblioteca · " + v.label()))
+        return out
+    }
+
+    private fun refreshNaturalList() {
+        naturalEntries = buildNaturalEntries()
+        val labels = naturalEntries.map { it.second }
+        val at = naturalEntries.indexOfFirst { it.first == prefs.naturalVoiceName }
+        naturalSpinner.onItemSelectedListener = null
+        naturalSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        naturalSpinner.setSelection(if (at >= 0) at else 0)
+        // só passa a ouvir a escolha depois que a lista assentou, para a lista não trocar a voz sozinha
+        naturalSpinner.post {
+            naturalSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val e = naturalEntries.getOrNull(position) ?: return
+                    prefs.naturalVoiceName = e.first
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+        }
+    }
+
     private fun addNaturalVoice(col: LinearLayout) {
         col.addView(heading("Voz natural (mais humana)"))
         col.addView(body("Usa a voz de IA do Gemini, bem mais expressiva e parecida com uma pessoa de verdade: tem emoção, risadinhas e pausas. Se falhar ou o limite acabar, a Capri volta sozinha para a voz do celular. Cada fala usa um pouco da sua cota do Gemini."))
@@ -548,18 +613,46 @@ class MainActivity : Activity() {
         sw.isChecked = prefs.naturalVoice
         sw.setOnCheckedChangeListener { _, checked ->
             prefs.naturalVoice = checked
+            refreshVoiceStatus()
             pushVoice()
         }
         col.addView(sw)
+        voiceStatus = body("")
+        col.addView(voiceStatus)
+        refreshVoiceStatus()
+
         col.addView(body("Voz"))
-        val names = GeminiTts.VOICES.map { it.second }
-        col.addView(optionSpinner(names, GeminiTts.VOICES.indexOfFirst { it.first == prefs.naturalVoiceName }) { i ->
-            prefs.naturalVoiceName = GeminiTts.VOICES[i].first
-        })
+        val fem = Switch(this)
+        fem.text = "Mostrar só vozes femininas"
+        fem.setTextColor(INK)
+        fem.isChecked = prefs.naturalFemale
+        fem.setOnCheckedChangeListener { _, checked ->
+            prefs.naturalFemale = checked
+            refreshNaturalList()
+        }
+        col.addView(fem)
+        naturalSpinner = Spinner(this)
+        col.addView(naturalSpinner)
+        refreshNaturalList()
+        col.addView(button("Ouvir esta voz") { testNatural() })
+        col.addView(button("Carregar mais vozes em português (biblioteca do Gemini)") { loadLibrary() })
+
         col.addView(body("Jeito de falar"))
         col.addView(optionSpinner(GeminiTts.STYLES.map { it.first }, prefs.naturalStyle) { i ->
             prefs.naturalStyle = i
         })
+        col.addView(body("Ou escreva do seu jeito (isso vale no lugar da lista). Exemplos: voz grave e rouca, falando devagar; bem aguda e animada; sussurrando com medo."))
+        styleField = EditText(this)
+        styleField.hint = "Deixe em branco para usar a lista"
+        styleField.setHintTextColor(DIM)
+        styleField.setTextColor(INK)
+        styleField.setText(prefs.naturalStyleCustom)
+        col.addView(styleField)
+
+        col.addView(body("Tom e velocidade valem para a voz natural e para a voz do celular."))
+        col.addView(labeledSeek("Tom", 0.5f, 1.5f, prefs.pitch) { v -> prefs.pitch = v })
+        col.addView(labeledSeek("Velocidade", 0.6f, 1.6f, prefs.rate) { v -> prefs.rate = v })
+
         col.addView(body("Chave do Gemini para a voz. Se a chave de cima já for do Google (AIza...), pode deixar em branco."))
         voiceKeyField = EditText(this)
         voiceKeyField.hint = "AIza... (só se a chave de cima for da Anthropic)"
@@ -569,7 +662,35 @@ class MainActivity : Activity() {
         voiceKeyField.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         voiceKeyField.setText(prefs.voiceKey)
         col.addView(voiceKeyField)
-        col.addView(button("Ouvir a voz natural") { testNatural() })
+    }
+
+    private fun loadLibrary() {
+        saveFields()
+        val key = prefs.naturalKey()
+        if (key.isEmpty()) {
+            Toast.makeText(this, "Cole uma chave do Gemini (AIza...) para carregar as vozes.", Toast.LENGTH_LONG).show()
+            return
+        }
+        Toast.makeText(this, "Buscando vozes...", Toast.LENGTH_SHORT).show()
+        Thread {
+            try {
+                val list = GeminiTts.listLibrary(key)
+                prefs.libVoices = GeminiTts.encodeLib(list)
+                runOnUiThread {
+                    refreshNaturalList()
+                    Toast.makeText(
+                        this,
+                        if (list.isEmpty()) "A biblioteca não devolveu vozes em português." else "Pronto: " + list.size + " vozes novas na lista.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
+                val why = if (e is ClaudeException) e.code + " " + (e.message ?: "") else e.javaClass.simpleName
+                runOnUiThread {
+                    Toast.makeText(this, "Não consegui buscar as vozes (" + why.take(90) + ").", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun testNatural() {
@@ -580,13 +701,15 @@ class MainActivity : Activity() {
             return
         }
         tts?.stop()
-        val style = GeminiTts.STYLES[prefs.naturalStyle.coerceIn(0, GeminiTts.STYLES.size - 1)].second
+        val style = GeminiTts.styleText(prefs.naturalStyle, prefs.naturalStyleCustom)
         Toast.makeText(this, "Gerando a voz...", Toast.LENGTH_SHORT).show()
         natural.speak(
             key, prefs.naturalVoiceName, style,
             "Oi, choom! Eu sou a Capri. <short pause> Gostou da minha voz? Agora eu falo bem mais natural, hihi.",
-            {},
+            prefs.pitch, prefs.rate,
+            { refreshVoiceStatus() },
             { why ->
+                refreshVoiceStatus()
                 Toast.makeText(
                     this,
                     "Não consegui gerar a voz natural (" + why.take(80) + "). Confira a chave do Gemini ou o limite grátis.",
@@ -594,6 +717,8 @@ class MainActivity : Activity() {
                 ).show()
             }
         )
+        // mostra na tela o que aconteceu assim que a primeira fala for gerada
+        voiceStatus.postDelayed({ refreshVoiceStatus() }, 4000)
     }
 
     private fun addVoiceSection(col: LinearLayout) {
@@ -622,11 +747,7 @@ class MainActivity : Activity() {
         markBtn = button("Marcar esta voz como feminina") { toggleMark() }
         col.addView(markBtn)
 
-        col.addView(body("Tom"))
-        col.addView(seek(((prefs.pitch - 0.5f) * 100f).toInt().coerceIn(0, 100)) { p -> prefs.pitch = 0.5f + p / 100f })
-        col.addView(body("Velocidade"))
-        col.addView(seek(((prefs.rate - 0.6f) * 100f).toInt().coerceIn(0, 100)) { p -> prefs.rate = 0.6f + p / 100f })
-        col.addView(button("Testar voz") { speakTest() })
+        col.addView(button("Testar voz do celular") { speakTest() })
     }
 
     private fun seek(progress: Int, onChange: (Int) -> Unit): SeekBar {
@@ -834,6 +955,7 @@ class MainActivity : Activity() {
         prefs.apiKey = keyField.text.toString()
         prefs.model = modelField.text.toString()
         if (this::voiceKeyField.isInitialized) prefs.voiceKey = voiceKeyField.text.toString()
+        if (this::styleField.isInitialized) prefs.naturalStyleCustom = styleField.text.toString()
     }
 
     private fun hasMic(): Boolean =
@@ -960,7 +1082,20 @@ class MainActivity : Activity() {
         startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
     }
 
+    private fun refreshVoiceStatus() {
+        if (!this::voiceStatus.isInitialized) return
+        val log = prefs.voiceLog
+        voiceStatus.text = when {
+            !prefs.naturalVoice -> "Voz natural desligada: a Capri fala com a voz do celular."
+            prefs.naturalKey().isEmpty() ->
+                "Sem chave do Gemini: por isso ela está falando com a voz do celular, que é mais robótica. Cole a chave do Gemini mais abaixo."
+            log.isEmpty() -> "Voz natural ligada. Ainda não falou nada por aqui."
+            else -> "Voz natural ligada. Última tentativa: $log"
+        }
+    }
+
     private fun refresh() {
+        refreshVoiceStatus()
         val mic = hasMic()
         val ov = canOverlay()
         val key = prefs.apiKey.isNotEmpty()

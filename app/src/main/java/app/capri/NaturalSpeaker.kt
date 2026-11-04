@@ -3,6 +3,8 @@ package app.capri
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.PlaybackParams
+import android.os.Build
 import android.os.Handler
 import java.io.File
 import java.util.concurrent.Executors
@@ -20,17 +22,21 @@ class NaturalSpeaker(private val ctx: Context, private val main: Handler) {
     private var playing = false
     private var fetchDone = false
     private var onFinished: (() -> Unit)? = null
+    private var pitch = 1f
+    private var rate = 1f
 
     /**
      * Fala o texto. onFinished: terminou de falar. onFail: não deu para gerar a voz (o motivo vai junto);
      * só vale se falhou antes de qualquer som, para quem chamou poder usar outra voz.
      */
     fun speak(
-        key: String, voice: String, style: String, text: String,
+        key: String, voice: String, style: String, text: String, pitch: Float, rate: Float,
         onFinished: () -> Unit, onFail: (String) -> Unit
     ) {
         stop()
         val my = gen
+        this.pitch = pitch.coerceIn(0.5f, 2f)
+        this.rate = rate.coerceIn(0.5f, 2f)
         this.onFinished = onFinished
         val chunks = split(text)
         if (chunks.isEmpty()) {
@@ -48,6 +54,7 @@ class NaturalSpeaker(private val ctx: Context, private val main: Handler) {
                     val f = File(ctx.cacheDir, "voz_" + System.nanoTime() + ".wav")
                     f.writeBytes(bytes)
                     file = f
+                    if (first) Prefs(ctx).voiceLog = "Deu certo: " + GeminiTts.lastModel + " · voz " + voice
                 } catch (e: ClaudeException) {
                     why = e.code + " " + (e.message ?: "").take(120)
                 } catch (e: Exception) {
@@ -59,6 +66,7 @@ class NaturalSpeaker(private val ctx: Context, private val main: Handler) {
                 }
                 if (file == null) {
                     if (first) {
+                        Prefs(ctx).voiceLog = "Falhou: " + why
                         val reason = why
                         main.post {
                             if (my == gen) {
@@ -139,6 +147,13 @@ class NaturalSpeaker(private val ctx: Context, private val main: Handler) {
             }
             mp.prepare()
             player = mp
+            if (Build.VERSION.SDK_INT >= 23 && (pitch != 1f || rate != 1f)) {
+                try {
+                    mp.playbackParams = PlaybackParams().setSpeed(rate).setPitch(pitch)
+                } catch (e: Exception) {
+                    // este aparelho não muda tom e velocidade: toca normal
+                }
+            }
             mp.start()
         } catch (e: Exception) {
             f.delete()

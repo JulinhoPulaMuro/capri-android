@@ -1562,12 +1562,11 @@ class OverlayService : Service() {
                 n = NaturalSpeaker(this, main)
                 natural = n
             }
-            val styles = GeminiTts.STYLES
-            val style = styles[prefs.naturalStyle.coerceIn(0, styles.size - 1)].second
+            val style = GeminiTts.styleText(prefs.naturalStyle, prefs.naturalStyleCustom)
             // a voz natural recebe as marcas (<laugh>, <short pause>); só tiramos o que é formatação
             val spoken = text.replace(Regex("[*_`#]+"), " ")
             n.speak(
-                prefs.naturalKey(), prefs.naturalVoiceName, style, spoken,
+                prefs.naturalKey(), prefs.naturalVoiceName, style, spoken, prefs.pitch, prefs.rate,
                 { afterSpeak() },
                 { _ ->
                     // não deu para gerar a voz natural: usa a voz do celular

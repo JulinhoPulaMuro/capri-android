@@ -232,6 +232,33 @@ class Prefs(context: Context) {
             sp.edit().putInt("naturalStyle", value).apply()
         }
 
+    var naturalFemale: Boolean
+        get() = sp.getBoolean("naturalFemale", false)
+        set(value) {
+            sp.edit().putBoolean("naturalFemale", value).apply()
+        }
+
+    /** Jeito de falar escrito pela pessoa (vale no lugar da lista quando não está vazio). */
+    var naturalStyleCustom: String
+        get() = sp.getString("naturalStyleCustom", "") ?: ""
+        set(value) {
+            sp.edit().putString("naturalStyleCustom", value).apply()
+        }
+
+    /** Vozes da biblioteca do Gemini já baixadas (JSON). */
+    var libVoices: String
+        get() = sp.getString("libVoices", "") ?: ""
+        set(value) {
+            sp.edit().putString("libVoices", value).apply()
+        }
+
+    /** O que aconteceu na última tentativa de falar com a voz natural. */
+    var voiceLog: String
+        get() = sp.getString("voiceLog", "") ?: ""
+        set(value) {
+            sp.edit().putString("voiceLog", value).apply()
+        }
+
     /** Chave do Gemini só para a voz (quando a chave principal é de outro serviço). */
     var voiceKey: String
         get() = sp.getString("voiceKey", "") ?: ""

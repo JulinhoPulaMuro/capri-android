@@ -13,25 +13,150 @@ import java.net.URL
  */
 object GeminiTts {
 
-    /** Nome da voz na API e como aparece no app. */
+    /** Uma voz pronta do Gemini: nome na API, descrição em português e se é voz feminina. */
+    class Voice(val id: String, val label: String, val female: Boolean)
+
+    /** As 30 vozes prontas. */
     val VOICES = listOf(
-        "Leda" to "Leda · jovem",
-        "Aoede" to "Aoede · leve",
-        "Zephyr" to "Zephyr · brilhante",
-        "Sulafat" to "Sulafat · calorosa",
-        "Laomedeia" to "Laomedeia · animada",
-        "Achernar" to "Achernar · suave",
-        "Kore" to "Kore · firme",
-        "Puck" to "Puck · alegre"
+        Voice("Leda", "Leda · jovem", true),
+        Voice("Aoede", "Aoede · leve", true),
+        Voice("Zephyr", "Zephyr · brilhante", true),
+        Voice("Sulafat", "Sulafat · calorosa", true),
+        Voice("Laomedeia", "Laomedeia · animada", true),
+        Voice("Achernar", "Achernar · suave", true),
+        Voice("Autonoe", "Autonoe · brilhante", true),
+        Voice("Callirrhoe", "Callirrhoe · tranquila", true),
+        Voice("Despina", "Despina · suave", true),
+        Voice("Erinome", "Erinome · clara", true),
+        Voice("Vindemiatrix", "Vindemiatrix · gentil", true),
+        Voice("Pulcherrima", "Pulcherrima · direta", true),
+        Voice("Kore", "Kore · firme", true),
+        Voice("Gacrux", "Gacrux · madura", true),
+        Voice("Puck", "Puck · alegre", false),
+        Voice("Fenrir", "Fenrir · empolgado", false),
+        Voice("Sadachbia", "Sadachbia · animado", false),
+        Voice("Achird", "Achird · amigável", false),
+        Voice("Zubenelgenubi", "Zubenelgenubi · descontraído", false),
+        Voice("Umbriel", "Umbriel · tranquilo", false),
+        Voice("Algieba", "Algieba · suave", false),
+        Voice("Charon", "Charon · informativo", false),
+        Voice("Rasalgethi", "Rasalgethi · informativo", false),
+        Voice("Sadaltager", "Sadaltager · entendido", false),
+        Voice("Orus", "Orus · firme", false),
+        Voice("Alnilam", "Alnilam · firme", false),
+        Voice("Schedar", "Schedar · equilibrado", false),
+        Voice("Iapetus", "Iapetus · claro", false),
+        Voice("Enceladus", "Enceladus · soprado", false),
+        Voice("Algenib", "Algenib · rouco", false)
     )
+
+    fun isPrebuilt(id: String): Boolean = VOICES.any { it.id == id }
 
     /** Jeito de falar: nome no app e a descrição que vai para a voz. */
     val STYLES = listOf(
         "Natural e carinhosa" to "Fale em português do Brasil como uma jovem de verdade conversando: voz natural, calorosa e cheia de emoção, ritmo solto, pequenas pausas e entonação que sobe e desce. Nada de voz de robô nem de locutora.",
         "Animada e brincalhona" to "Fale em português do Brasil animada e brincalhona, com muita expressão, sorriso na voz, risadinhas de verdade e ritmo vivo.",
         "Calma e suave" to "Fale em português do Brasil de forma calma, suave e acolhedora, mais devagar, como quem conta uma confidência.",
-        "Provocadora" to "Fale em português do Brasil de um jeito provocador e debochado, com sarcasmo leve, pausas dramáticas e entonação bem marcada."
+        "Provocadora" to "Fale em português do Brasil de um jeito provocador e debochado, com sarcasmo leve, pausas dramáticas e entonação bem marcada.",
+        "Sussurrando" to "Fale em português do Brasil sussurrando, bem perto do ouvido, de forma íntima e misteriosa.",
+        "Séria e direta" to "Fale em português do Brasil de forma séria, firme e direta, sem enfeites, com voz controlada e calculista.",
+        "Fofa e infantil" to "Fale em português do Brasil com voz fofa, aguda e travessa, como uma criança esperta e brincalhona.",
+        "Entediada e sarcástica" to "Fale em português do Brasil entediada e sarcástica, arrastando as palavras, com ironia na voz.",
+        "Grave e misteriosa" to "Fale em português do Brasil com voz mais grave e misteriosa, devagar, com pausas longas e tensão."
     )
+
+    /** O texto de estilo que vale: o que a pessoa escreveu, ou o do jeito escolhido na lista. */
+    fun styleText(index: Int, custom: String): String {
+        val c = custom.trim()
+        if (c.isNotEmpty()) {
+            return if (c.contains("portugu", ignoreCase = true)) c else "Fale em português do Brasil. $c"
+        }
+        return STYLES[index.coerceIn(0, STYLES.size - 1)].second
+    }
+
+    /** O último modelo que respondeu (para mostrar no app). */
+    @Volatile
+    var lastModel: String = ""
+
+    /** Uma voz da biblioteca estendida do Gemini. */
+    class LibVoice(val id: String, val name: String, val gender: String, val pitch: String, val accent: String) {
+        val female: Boolean get() = gender.equals("female", ignoreCase = true)
+        fun label(): String {
+            val g = when (gender.lowercase()) {
+                "female" -> "feminina"
+                "male" -> "masculina"
+                else -> "neutra"
+            }
+            val p = when (pitch.lowercase()) {
+                "low" -> " · grave"
+                "high" -> " · aguda"
+                "medium" -> " · média"
+                else -> ""
+            }
+            val a = if (accent.isNotBlank()) " · $accent" else ""
+            return "$name · $g$p$a"
+        }
+    }
+
+    fun encodeLib(list: List<LibVoice>): String {
+        val a = JSONArray()
+        for (v in list) {
+            a.put(JSONObject().put("id", v.id).put("name", v.name).put("gender", v.gender).put("pitch", v.pitch).put("accent", v.accent))
+        }
+        return a.toString()
+    }
+
+    fun decodeLib(s: String): List<LibVoice> {
+        if (s.isBlank()) return emptyList()
+        val out = ArrayList<LibVoice>()
+        try {
+            val a = JSONArray(s)
+            for (i in 0 until a.length()) {
+                val o = a.optJSONObject(i) ?: continue
+                val id = o.optString("id")
+                if (id.isEmpty()) continue
+                out.add(LibVoice(id, o.optString("name", id), o.optString("gender"), o.optString("pitch"), o.optString("accent")))
+            }
+        } catch (e: Exception) {
+            return emptyList()
+        }
+        return out
+    }
+
+    /** Baixa as vozes em português da biblioteca estendida do Gemini. */
+    fun listLibrary(key: String): List<LibVoice> {
+        val conn = URL(BASE + "voices?language_code=pt-BR&page_size=200").openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 10000
+            conn.readTimeout = 20000
+            conn.setRequestProperty("x-goog-api-key", key)
+            val status = conn.responseCode
+            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (status !in 200..299) {
+                var msg = raw.take(200)
+                try {
+                    msg = JSONObject(raw).getJSONObject("error").getString("message")
+                } catch (e: Exception) {
+                    // mantém o texto bruto
+                }
+                throw ClaudeException("http_$status", msg)
+            }
+            val arr = JSONObject(raw).optJSONArray("voices") ?: JSONArray()
+            val out = ArrayList<LibVoice>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id")
+                if (id.isEmpty()) continue
+                val name = o.optString("display_name").ifEmpty { id }
+                out.add(LibVoice(id, name, o.optString("gender"), o.optString("pitch"), o.optString("accent")))
+            }
+            return out
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     private val MODELS = listOf("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview")
     private const val LEGACY = "gemini-2.5-flash-preview-tts"
@@ -43,6 +168,18 @@ object GeminiTts {
 
     /** Gera a fala. Lança ClaudeException (erro da API) ou IOException (sem rede). */
     fun synth(key: String, voice: String, style: String, text: String): ByteArray {
+        try {
+            return synthWith(key, voice, style, text)
+        } catch (e: ClaudeException) {
+            // voz da biblioteca que o modelo não aceitou: tenta a voz pronta padrão
+            if (!isPrebuilt(voice) && (e.code == "http_400" || e.code == "http_404")) {
+                return synthWith(key, "Leda", style, text)
+            }
+            throw e
+        }
+    }
+
+    private fun synthWith(key: String, voice: String, style: String, text: String): ByteArray {
         val order = ArrayList<String>()
         val g = good
         if (g != null) order.add(g)
@@ -52,8 +189,10 @@ object GeminiTts {
         var last: Exception? = null
         for (m in order) {
             try {
-                val wav = if (m == LEGACY) legacy(key, voice, style, text) else interactions(key, m, voice, style, text)
+                val v = if (m == LEGACY && !isPrebuilt(voice)) "Leda" else voice
+                val wav = if (m == LEGACY) legacy(key, v, style, text) else interactions(key, m, voice, style, text)
                 good = m
+                lastModel = m
                 return wav
             } catch (e: ClaudeException) {
                 last = e
